@@ -17,6 +17,7 @@ import {
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
 import Logs from './pages/Logs';
+import Console from './pages/Console';
 import Files from './pages/Files';
 import UsersPage from './pages/Users';
 import Security from './pages/Security';
@@ -58,6 +59,10 @@ const router = createBrowserRouter(
         {
           path: 'console',
           element: <PlaceholderPage title="Console" description="Visualize os logs e a saída do servidor." />,
+        },
+        {
+          path: 'console/:serverId',
+          element: <Console />,
         },
         {
           path: 'players',
@@ -197,7 +202,11 @@ function RootLayout() {
       '/security': { label: 'Segurança', parent: 'Usuários' },
       '/finance': { label: 'Financeiro', parent: 'Usuários' },
     };
-    
+
+    if (path.startsWith('/console')) {
+      return { label: 'Console', parent: 'Configurações' };
+    }
+
     return pathMap[path] || { label: 'Página', parent: null };
   };
 

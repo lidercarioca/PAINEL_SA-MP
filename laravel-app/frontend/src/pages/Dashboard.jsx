@@ -600,7 +600,9 @@ const Dashboard = () => {
   const serverUptime = activeServer?.uptime || activeServer?.running_time || '—';
 
   const scrollToConsole = () => {
-    serverLogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    if (activeServer) {
+      navigate(`/console/${activeServer.id}`);
+    }
   };
 
   return (
