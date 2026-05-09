@@ -424,6 +424,7 @@ class ServerController extends Controller
             'owner_id' => 'nullable|integer',
             'limit_ram' => 'nullable|integer',
             'limit_slots' => 'nullable|integer',
+            'disk_limit_gb' => 'nullable|integer|min:1',
             'plan_id' => 'nullable|integer',
             'game_mode' => 'nullable|string',
             'auto_restart_interval_hours' => 'nullable|integer',
@@ -449,6 +450,7 @@ class ServerController extends Controller
             'game_mode' => $data['game_mode'] ?? null,
             'limit_ram' => $data['limit_ram'] ?? null,
             'limit_slots' => $data['limit_slots'] ?? null,
+            'disk_limit_gb' => $data['disk_limit_gb'] ?? null,
             'auto_restart_interval_hours' => $data['auto_restart_interval_hours'] ?? null,
             'auto_restart_on_crash' => $data['auto_restart_on_crash'] ?? false,
             'auto_restart_on_offline' => $data['auto_restart_on_offline'] ?? false,
@@ -474,6 +476,7 @@ class ServerController extends Controller
             'game_mode' => 'nullable|string',
             'limit_ram' => 'nullable|integer',
             'limit_slots' => 'nullable|integer',
+            'disk_limit_gb' => 'nullable|integer|min:1',
             'auto_restart_interval_hours' => 'nullable|integer',
             'auto_restart_on_crash' => 'nullable|boolean',
             'auto_restart_on_offline' => 'nullable|boolean',
@@ -520,6 +523,9 @@ class ServerController extends Controller
         }
         if ($request->has('limit_slots')) {
             $server->limit_slots = $data['limit_slots'] ?? null;
+        }
+        if ($request->has('disk_limit_gb')) {
+            $server->disk_limit_gb = $data['disk_limit_gb'] ?? null;
         }
         if ($request->has('auto_restart_interval_hours')) {
             $server->auto_restart_interval_hours = $data['auto_restart_interval_hours'] ?? null;

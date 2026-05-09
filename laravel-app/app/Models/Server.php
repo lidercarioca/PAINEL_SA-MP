@@ -22,6 +22,7 @@ class Server extends Model
         'game_mode',
         'limit_ram',
         'limit_slots',
+        'disk_limit_gb',
         'auto_restart_interval_hours',
         'auto_restart_on_crash',
         'auto_restart_on_offline',
@@ -33,6 +34,7 @@ class Server extends Model
     ];
 
     protected $casts = [
+        'disk_limit_gb' => 'integer',
         'auto_restart_interval_hours' => 'integer',
         'auto_restart_on_crash' => 'boolean',
         'auto_restart_on_offline' => 'boolean',

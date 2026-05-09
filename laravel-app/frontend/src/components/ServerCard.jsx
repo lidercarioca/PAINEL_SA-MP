@@ -15,39 +15,63 @@ const ServerCard = ({ server, ownerName, onAction, onRcon, onEdit, onDelete, can
     const normalized = String(status || '').toLowerCase();
     switch (normalized) {
       case 'online':
-        return ping ? `🟢 Online (${ping} ms)` : '🟢 Online (ping desconhecido)';
+        return ping ? `Online • ${ping} ms` : 'Online';
       case 'offline':
-        return '🔴 Offline';
+        return 'Offline';
       case 'starting':
-        return '🟡 Iniciando';
+        return 'Iniciando';
       case 'suspended':
-        return '🔴 Offline';
+        return 'Suspenso';
       default:
-        return normalized ? `🟡 ${status}` : '🔴 Offline';
+        return normalized ? String(status) : 'Offline';
     }
   };
 
   return (
-    <div className="server-card">
-      <h3>{server.name}</h3>
-      <p>{server.ip}:{server.port}</p>
-      <p>
-        Status:{' '}
+    <article className="server-card">
+      <div className="server-card-header">
+        <div>
+          <h3>{server.name}</h3>
+          <p className="server-card-address">{server.ip}:{server.port}</p>
+        </div>
         <span className={`status-badge ${statusClass}`}>
           {getStatusLabel(server.status, server.ping)}
         </span>
-      </p>
-      {server.folder && <p>Pasta: {server.folder}</p>}
-      {ownerName && <p>Cliente: {ownerName}</p>}
-      {server.plan_name && <p>Plano: {server.plan_name}</p>}
-      {serverGamemode && <p>Gamemode: {serverGamemode}</p>}
+      </div>
+
+      <div className="server-card-meta">
+        {server.folder && (
+          <div className="meta-item">
+            <span className="meta-label">Pasta</span>
+            <span>{server.folder}</span>
+          </div>
+        )}
+        {ownerName && (
+          <div className="meta-item">
+            <span className="meta-label">Cliente</span>
+            <span>{ownerName}</span>
+          </div>
+        )}
+        {server.plan_name && (
+          <div className="meta-item">
+            <span className="meta-label">Plano</span>
+            <span>{server.plan_name}</span>
+          </div>
+        )}
+        {serverGamemode && (
+          <div className="meta-item">
+            <span className="meta-label">Gamemode</span>
+            <span>{serverGamemode}</span>
+          </div>
+        )}
+      </div>
 
       {canControl ? (
         <>
-          <div className="buttons">
+          <div className="server-card-actions">
             <LoadingButton
               type="button"
-              variant="primary"
+              variant="success"
               loading={isLoading('start')}
               onClick={() => onAction(server.id, 'start')}
             >
@@ -63,7 +87,7 @@ const ServerCard = ({ server, ownerName, onAction, onRcon, onEdit, onDelete, can
             </LoadingButton>
             <LoadingButton
               type="button"
-              variant="secondary"
+              variant="primary"
               loading={isLoading('restart')}
               onClick={() => onAction(server.id, 'restart')}
             >
@@ -72,7 +96,7 @@ const ServerCard = ({ server, ownerName, onAction, onRcon, onEdit, onDelete, can
             {isAdmin && (
               <LoadingButton
                 type="button"
-                variant="secondary"
+                variant="danger"
                 loading={isLoading('suspend')}
                 onClick={() => onAction(server.id, 'suspend')}
               >
@@ -91,20 +115,26 @@ const ServerCard = ({ server, ownerName, onAction, onRcon, onEdit, onDelete, can
             )}
           </div>
 
-          <div className="rcon-form">
+          <div className="server-card-rcon">
             <input
               type="text"
               value={command}
               placeholder="Comando RCON"
               onChange={(e) => setCommand(e.target.value)}
             />
-            <button type="button" onClick={() => onRcon(server.id, command)}>Enviar RCON</button>
+            <LoadingButton
+              type="button"
+              variant="primary"
+              onClick={() => onRcon(server.id, command)}
+            >
+              Enviar RCON
+            </LoadingButton>
           </div>
         </>
       ) : (
-        <p>Somente administrador ou proprietário podem controlar este servidor.</p>
+        <div className="server-card-note">Somente administrador ou proprietário podem controlar este servidor.</div>
       )}
-    </div>
+    </article>
   );
 };
 

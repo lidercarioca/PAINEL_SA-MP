@@ -22,6 +22,7 @@ import UsersPage from './pages/Users';
 import Security from './pages/Security';
 import Finance from './pages/Finance';
 import Servers from './pages/Servers';
+import CreateServer from './pages/CreateServer';
 import PlaceholderPage from './pages/PlaceholderPage';
 
 const router = createBrowserRouter(
@@ -45,6 +46,14 @@ const router = createBrowserRouter(
         {
           path: 'server',
           element: <Servers />,
+        },
+        {
+          path: 'create-server',
+          element: (
+            <RequireAdmin>
+              <CreateServer />
+            </RequireAdmin>
+          ),
         },
         {
           path: 'console',
@@ -200,7 +209,7 @@ function RootLayout() {
       items: [
         { path: '/dashboard', label: 'Dashboard', icon: Home },
         { path: '/server', label: 'Servidores', icon: HardDrive },
-        { path: '/dashboard', label: 'Criar Servidor', icon: Plus, adminOnly: true },
+        { path: '/create-server', label: 'Criar Servidor', icon: Plus, adminOnly: true },
         { path: '/dashboard', label: 'Backups', icon: HardDrive, adminOnly: true },
       ],
     },
@@ -256,6 +265,9 @@ function RootLayout() {
                   <NavLink
                     key={item.path + item.label}
                     to={item.path}
+                    title={!sidebarOpen ? item.label : undefined}
+                    data-tooltip={item.label}
+                    aria-label={item.label}
                     className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}
                   >
                     <item.icon size={18} className="nav-icon" />

@@ -21,6 +21,8 @@ import {
 } from '../services/api';
 import ServerCard from '../components/ServerCard';
 import LoadingButton from '../components/LoadingButton';
+import PlayersChart from '../components/PlayersChart';
+import ServerConsole from '../components/ServerConsole';
 
 const getStatusLabel = (status, ping = null) => {
   const normalized = String(status || '').toLowerCase();
@@ -48,6 +50,7 @@ const Dashboard = () => {
   const [players, setPlayers] = useState([]);
   const [playersLoading, setPlayersLoading] = useState(false);
   const [playersError, setPlayersError] = useState('');
+  const [chartHistory, setChartHistory] = useState([]);
   const [serverFps, setServerFps] = useState(null);
   const [serverCpu, setServerCpu] = useState(null);
   const [serverMemory, setServerMemory] = useState(null);
@@ -244,8 +247,20 @@ const Dashboard = () => {
     setPlayersLoading(true);
     try {
       const { data } = await fetchPlayers(serverId);
-      setPlayers(data.players || []);
+      const playersList = data.players || [];
+      setPlayers(playersList);
       setPlayersError('');
+
+      // Atualizar histórico de gráfico com os dados atuais
+      setChartHistory((prev) => {
+        const newEntry = {
+          timestamp: new Date(),
+          players: playersList.length,
+        };
+        // Manter apenas os últimos 60 pontos (10 minutos com atualizações a cada 5s)
+        const updated = [...prev, newEntry];
+        return updated.length > 60 ? updated.slice(-60) : updated;
+      });
     } catch (error) {
       const message = getApiErrorMessage(error);
       setPlayers([]);
@@ -537,6 +552,7 @@ const Dashboard = () => {
     }
     setPlayers([]);
     setPlayersError('');
+    setChartHistory([]);
     return undefined;
   }, [activeServer]);
 
@@ -585,20 +601,6 @@ const Dashboard = () => {
 
   const scrollToConsole = () => {
     serverLogRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  };
-
-  const formatLogLine = (line) => {
-    const timestampMatch = line.match(/^\[[^\]]+\]/);
-    const timestamp = timestampMatch ? timestampMatch[0] : '';
-    const content = timestampMatch ? line.slice(timestamp.length).trim() : line;
-    const level = content.includes('ERROR')
-      ? 'error'
-      : content.includes('WARNING')
-      ? 'warning'
-      : content.includes('INFO')
-      ? 'info'
-      : 'default';
-    return { timestamp, content, level };
   };
 
   return (
@@ -725,9 +727,17 @@ const Dashboard = () => {
           </div>
           <div className="chart-panel">
             {activeServer ? (
-              <div className="chart-empty">{serverPlayers} jogadores conectados</div>
+              <PlayersChart
+                players={serverPlayers}
+                maxSlots={activeServer.limit_slots || 32}
+                chartHistory={chartHistory}
+              />
             ) : (
-              <div className="chart-empty">Nenhum servidor ativo</div>
+              <PlayersChart
+                players={0}
+                maxSlots={32}
+                chartHistory={[]}
+              />
             )}
           </div>
         </div>
@@ -762,6 +772,10 @@ const Dashboard = () => {
               <div>
                 <strong>RAM Limite</strong>
                 <p>{activeServer.limit_ram ? `${activeServer.limit_ram} MB` : '—'}</p>
+              </div>
+              <div>
+                <strong>Disco Limite</strong>
+                <p>{activeServer.disk_limit_gb ? `${activeServer.disk_limit_gb} GB` : 'Ilimitado'}</p>
               </div>
             </div>
           ) : (
@@ -803,29 +817,12 @@ const Dashboard = () => {
         </div>
 
         <div className="card logs-card">
-          <div className="card-header">
-            <h3>Console / Logs Recentes</h3>
-            <small>Últimas entradas</small>
-          </div>
-          <div className="server-log-output">
-            {serverLogLoading && serverLogLines.length === 0 ? (
-              <div className="empty-state">Carregando logs...</div>
-            ) : serverLogError ? (
-              <div className="empty-state error">{serverLogError}</div>
-            ) : serverLogLines.length > 0 ? (
-              serverLogLines.slice(-24).map((line, index) => {
-                const { timestamp, content, level } = formatLogLine(line);
-                return (
-                  <div key={index} className={`log-line log-${level}`}>
-                    {timestamp && <span className="log-timestamp">{timestamp}</span>}
-                    <span className="log-message">{content}</span>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="empty-state">Nenhum log disponível</div>
-            )}
-          </div>
+          <ServerConsole
+            serverLogLines={serverLogLines}
+            serverLogLoading={serverLogLoading}
+            serverLogError={serverLogError}
+            activeServer={activeServer}
+          />
         </div>
 
         <div className="card quick-actions-card">
