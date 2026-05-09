@@ -1,0 +1,18 @@
+[
+    {
+        "id": 1,
+        "name": "Administrador",
+        "email": "admin@example.com",
+        "password": "admin123",
+        "role": "admin",
+        "api_token": "44aadd33bf704acfc835bf6fef3293d7"
+    },
+    {
+        "id": 2,
+        "name": "Cliente",
+        "email": "client@example.com",
+        "password": "client123",
+        "role": "client",
+        "api_token": null
+    }
+]

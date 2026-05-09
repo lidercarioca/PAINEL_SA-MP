@@ -1,0 +1,15 @@
+{
+  "chat.viewSessions.orientation": "stacked",
+  "terminal.integrated.initialHint": false,
+  "chat.tools.terminal.autoApprove": {
+    "/^php -r \"echo defined\\('JSON_INVALID_UTF8_IGNORE'\\) \\? JSON_INVALID_UTF8_IGNORE : 'undefined'; echo ' '; echo defined\\('JSON_PARTIAL_OUTPUT_ON_ERROR'\\) \\? JSON_PARTIAL_OUTPUT_ON_ERROR : 'undefined';\"$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  },
+  "files.autoSave": "afterDelay",
+  "php.validate.executablePath": "C:\\xampp\\php\\php.exe",
+  "[html]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  }
+}

@@ -1,0 +1,807 @@
+/* =========================================================
+   SA-MP / FiveM PANEL — ENTERPRISE DASHBOARD CSS
+   CLEAN VERSION — 100VH LAYOUT
+   ========================================================= */
+
+:root {
+  --bg-primary: #040b1d;
+  --bg-secondary: #091427;
+  --bg-card: #0d1830;
+  --bg-card-2: #101d38;
+
+  --border-color: rgba(255,255,255,0.06);
+
+  --text-primary: #ffffff;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --blue: #3b82f6;
+  --green: #22c55e;
+  --orange: #f59e0b;
+  --red: #ef4444;
+  --cyan: #38bdf8;
+  --purple: #a855f7;
+
+  --radius: 16px;
+
+  --shadow:
+    0 10px 30px rgba(0,0,0,0.35);
+
+  --transition: 180ms ease;
+}
+
+/* =========================================================
+   RESET
+   ========================================================= */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  inline-size: 100%;
+  block-size: 100%;
+  overflow: hidden;
+  font-family: Inter, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* =========================================================
+   APP LAYOUT
+   ========================================================= */
+
+.app-layout {
+  display: flex;
+  inline-size: 100%;
+  block-size: 100vh;
+  overflow: hidden;
+}
+
+/* =========================================================
+   SIDEBAR
+   ========================================================= */
+
+.app-sidebar {
+  inline-size: 220px;
+  min-inline-size: 220px;
+  background:
+    linear-gradient(
+      180deg,
+      #071224 0%,
+      #0a1630 100%
+    );
+
+  border-inline-end: 1px solid var(--border-color);
+
+  display: flex;
+  flex-direction: column;
+
+  overflow: hidden;
+}
+
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+
+  padding: 16px 10px;
+}
+
+.sidebar-group {
+  margin-block-end: 18px;
+}
+
+.sidebar-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+
+  margin-block-end: 10px;
+  padding: 0 12px;
+}
+
+.sidebar-link {
+  inline-size: 100%;
+  block-size: 42px;
+
+  border-radius: 12px;
+
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  padding: 0 14px;
+
+  color: #dbeafe;
+  text-decoration: none;
+
+  transition: var(--transition);
+
+  margin-block-end: 6px;
+
+  border: 1px solid transparent;
+}
+
+.sidebar-link:hover {
+  background: rgba(59,130,246,0.12);
+}
+
+.sidebar-link.active {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(59,130,246,0.24),
+      rgba(59,130,246,0.12)
+    );
+
+  border-color: rgba(59,130,246,0.6);
+}
+
+/* =========================================================
+   MAIN AREA
+   ========================================================= */
+
+.app-main {
+  flex: 1;
+
+  display: flex;
+  flex-direction: column;
+
+  overflow: hidden;
+}
+
+/* =========================================================
+   TOPBAR
+   ========================================================= */
+
+.app-topbar {
+  block-size: 54px;
+  min-block-size: 54px;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  padding: 0 22px;
+
+  border-block-end: 1px solid var(--border-color);
+
+  background:
+    linear-gradient(
+      90deg,
+      rgba(12,24,48,0.95),
+      rgba(17,30,56,0.95)
+    );
+}
+
+.topbar-user {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.topbar-avatar {
+  inline-size: 34px;
+  block-size: 34px;
+
+  border-radius: 50%;
+
+  background: var(--blue);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  font-weight: 700;
+}
+
+/* =========================================================
+   CONTENT
+   ========================================================= */
+
+.app-content {
+  flex: 1;
+
+  overflow: hidden;
+
+  padding: 14px 18px;
+}
+
+/* =========================================================
+   DASHBOARD
+   ========================================================= */
+
+.dashboard-container {
+  inline-size: 100%;
+  max-inline-size: 1450px;
+
+  margin: 0 auto;
+
+  block-size: 100%;
+
+  display: flex;
+  flex-direction: column;
+
+  gap: 12px;
+}
+
+/* =========================================================
+   HEADER
+   ========================================================= */
+
+.dashboard-header {
+  block-size: 48px;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dashboard-title h1 {
+  font-size: 2rem;
+  font-weight: 800;
+}
+
+.dashboard-title span {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+/* =========================================================
+   GRID
+   ========================================================= */
+
+.dashboard-grid {
+  flex: 1;
+
+  display: grid;
+
+  grid-template-columns: repeat(12, 1fr);
+
+  grid-template-rows:
+    105px
+    132px
+    210px
+    245px;
+
+  gap: 14px;
+
+  overflow: hidden;
+}
+/* =========================================================
+   CARDS
+   ========================================================= */
+
+.card {
+  background:
+    linear-gradient(
+      180deg,
+      rgba(13,24,48,0.98),
+      rgba(10,18,36,0.98)
+    );
+
+  border: 1px solid var(--border-color);
+
+  border-radius: var(--radius);
+
+  box-shadow: var(--shadow);
+
+  overflow: hidden;
+}
+
+/* =========================================================
+   SERVER HERO
+   ========================================================= */
+
+.server-hero {
+  grid-column: span 6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+}
+
+.server-title {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.server-status-dot {
+  inline-size: 14px;
+  block-size: 14px;
+  border-radius: 50%;
+  background: var(--red);
+}
+
+.server-title h2 {
+  font-size: 1.7rem;
+}
+
+.server-title p {
+  color: var(--text-secondary);
+  margin-block-start: 3px;
+}
+
+.server-badge {
+  block-size: 40px;
+
+  padding: 0 18px;
+
+  border-radius: 999px;
+
+  display: flex;
+  align-items: center;
+
+  background: rgba(239,68,68,0.18);
+  color: #ffb4b4;
+
+  border: 1px solid rgba(239,68,68,0.5);
+
+  font-weight: 700;
+}
+
+/* =========================================================
+   SUMMARY CARDS
+   ========================================================= */
+
+.summary-card {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.summary-card h4 {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  letter-spacing: 1px;
+  margin-block-end: 10px;
+}
+
+.summary-card strong {
+  font-size: 2rem;
+}
+
+.summary-card p {
+  margin-block-start: 6px;
+  color: var(--text-secondary);
+}
+
+/* =========================================================
+   METRICS
+   ========================================================= */
+
+.metric-card {
+  grid-column: span 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 16px;
+}
+
+.metric-card h4 {
+  font-size: 1rem;
+  margin-block-end: 8px;
+}
+
+.metric-ring {
+  position: relative;
+  inline-size: 72px;
+  block-size: 72px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.metric-ring-progress {
+  position: absolute;
+  inline-size: 100%;
+  block-size: 100%;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--accent, #3b82f6) calc(var(--progress) * 1%),
+    rgba(255, 255, 255, 0.08) calc(var(--progress) * 1%)
+  );
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.3s ease;
+}
+
+.metric-ring-progress::before {
+  content: '';
+  position: absolute;
+  inline-size: 60px;
+  block-size: 60px;
+  border-radius: 50%;
+  background: rgba(13, 24, 48, 0.95);
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+}
+
+.metric-ring-inner {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 100%;
+  block-size: 100%;
+}
+
+.metric-ring-inner strong {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.metric-card p {
+  margin-block-start: 10px;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+/* =========================================================
+   CHART
+   ========================================================= */
+
+.chart-card {
+  grid-column: span 7;
+
+  display: flex;
+  flex-direction: column;
+}
+
+.card-header {
+  block-size: 42px;
+
+  padding: 0 16px;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+
+  border-block-end: 1px solid var(--border-color);
+}
+
+.card-header h3 {
+  font-size: 1rem;
+}
+
+.card-header span {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+.chart-wrapper {
+  flex: 1;
+  padding: 16px;
+  min-block-size: 0;
+}
+
+/* =========================================================
+   SERVER INFO
+   ========================================================= */
+
+.server-info-card {
+  grid-column: span 5;
+  padding: 18px 22px;
+  overflow: hidden;
+}
+
+.server-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px 28px;
+}
+
+.server-info-item strong {
+  display: block;
+
+  color: var(--text-muted);
+
+  font-size: 0.72rem;
+
+  margin-block-end: 4px;
+
+  letter-spacing: 1px;
+}
+
+.server-info-item p {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+/* =========================================================
+   PLAYERS
+   ========================================================= */
+
+.players-card {
+  grid-column: span 4;
+
+  display: flex;
+  flex-direction: column;
+}
+
+.players-table-wrapper {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 18px;
+}
+
+/* =========================================================
+   LOGS
+   ========================================================= */
+
+.logs-card {
+  grid-column: span 4;
+
+  display: flex;
+  flex-direction: column;
+}
+
+.server-log-output {
+  flex: 1;
+
+  overflow-y: auto;
+
+  padding: 10px 12px;
+
+  background: rgba(0,0,0,0.25);
+
+  white-space: pre;
+
+  font-family: monospace;
+
+  font-size: 0.78rem;
+}
+
+/* =========================================================
+   QUICK ACTIONS
+   ========================================================= */
+
+.quick-actions-card {
+  grid-column: span 4;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  min-block-size: 245px;
+}
+.quick-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-block-start: 12px;
+}
+.action-button {
+  block-size: 40px;
+  border: none;
+  border-radius: 11px;
+  font-weight: 700;
+  color: white;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.action-button:hover {
+  transform: translateY(-2px);
+}
+
+.btn-start {
+  background: linear-gradient(135deg,#22c55e,#16a34a);
+}
+
+.btn-restart {
+  background: linear-gradient(135deg,#3b82f6,#2563eb);
+}
+
+.btn-stop {
+  background: linear-gradient(135deg,#f59e0b,#ea580c);
+}
+
+.btn-kill {
+  background: linear-gradient(135deg,#ef4444,#dc2626);
+}
+
+.btn-console {
+  background: #334155;
+}
+
+.btn-command {
+  background: linear-gradient(135deg,#38bdf8,#3b82f6);
+}
+
+.btn-backup {
+  background: linear-gradient(135deg,#64748b,#475569);
+}
+
+/* =========================================================
+   GRID POSITIONS
+   ========================================================= */
+
+.server-hero {
+  grid-column: span 6;
+}
+
+.players-summary {
+  grid-column: span 3;
+}
+
+.status-summary {
+  grid-column: span 3;
+}
+
+.metric-card {
+  grid-column: span 3;
+}
+
+/* =========================================================
+   RESPONSIVE
+   ========================================================= */
+
+@media (max-width: 1400px) {
+  .dashboard-grid {
+    overflow-y: auto;
+    block-size: auto;
+    grid-template-rows: auto;
+  }
+
+  .server-hero,
+  .players-summary,
+  .status-summary,
+  .metric-card,
+  .chart-card,
+  .server-info-card,
+  .players-card,
+  .logs-card,
+  .quick-actions-card {
+    grid-column: span 12;
+  }
+}
+
+/* === FIX COMPATIBILIDADE COM CLASSES REAIS DO PAINEL === */
+
+.sidebar-header {
+  block-size: 78px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  border-block-end: 1px solid var(--border-color);
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.sidebar-logo {
+  inline-size: 42px;
+  block-size: 42px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  color: #fff;
+  font-weight: 800;
+  box-shadow: 0 8px 20px rgba(59, 130, 246, 0.35);
+}
+
+.sidebar-title {
+  font-size: 0.86rem;
+  font-weight: 800;
+  color: #fff;
+  letter-spacing: 1px;
+}
+
+.app-nav {
+  padding: 16px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.nav-group {
+  margin-block-end: 18px;
+}
+
+.nav-group-label {
+  padding: 0 12px 10px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.nav-link {
+  block-size: 42px;
+  padding: 0 14px;
+  margin-block-end: 6px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #dbeafe;
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+
+.nav-link.active {
+  background: linear-gradient(135deg, rgba(59,130,246,.28), rgba(59,130,246,.12));
+  border-color: rgba(59,130,246,.75);
+}
+
+.nav-icon {
+  inline-size: 18px;
+  block-size: 18px;
+}
+
+.nav-label {
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.breadcrumb {
+  display: flex;
+  gap: 8px;
+  font-size: 0.84rem;
+}
+
+.breadcrumb-label {
+  color: #94a3b8;
+}
+
+.breadcrumb-current {
+  color: #fff;
+  font-weight: 700;
+}
+
+.topbar-right,
+.topbar-user-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.players-table {
+  inline-size: 100%;
+  display: table;
+  border-collapse: collapse;
+}
+
+.players-table-row {
+  display: grid;
+  grid-template-columns: 60px 1fr 70px 70px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.players-table-head {
+  border-block-end: 1px solid rgba(255,255,255,.12);
+  font-weight: 800;
+  color: #fff;
+}
+
+.action-button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+  transform: none;
+}

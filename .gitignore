@@ -1,0 +1,8 @@
+laravel-app/frontend/node_modules/
+laravel-app/vendor/
+laravel-app/frontend/build/
+laravel-app/bootstrap/cache/
+laravel-app/storage/logs/
+laravel-app/database/*.txt
+laravel-app/.env
+.env
