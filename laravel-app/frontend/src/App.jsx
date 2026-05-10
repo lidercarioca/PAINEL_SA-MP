@@ -24,6 +24,7 @@ import UsersPage from './pages/Users';
 import Security from './pages/Security';
 import Finance from './pages/Finance';
 import Servers from './pages/Servers';
+import Backups from './pages/Backups';
 import CreateServer from './pages/CreateServer';
 import PlaceholderPage from './pages/PlaceholderPage';
 import { logout, getApiErrorMessage } from './services/api';
@@ -84,7 +85,7 @@ const router = createBrowserRouter(
         },
         {
           path: 'backups',
-          element: <PlaceholderPage title="Backups" description="Gerenciamento de backups do servidor." />,
+          element: <Backups />,
         },
         {
           path: 'scheduler',
@@ -237,7 +238,7 @@ function RootLayout() {
         { path: '/dashboard', label: 'Dashboard', icon: Home },
         { path: '/server', label: 'Servidores', icon: HardDrive },
         { path: '/create-server', label: 'Criar Servidor', icon: Plus, adminOnly: true },
-        { path: '/dashboard', label: 'Backups', icon: HardDrive, adminOnly: true },
+        { path: '/backups', label: 'Backups', icon: HardDrive },
       ],
     },
     {

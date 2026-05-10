@@ -38,6 +38,12 @@ export const fetchServerConsoleStream = (serverId, offset = 0) =>
 export const fetchPlayers = (serverId) => api.get(`/servers/${serverId}/players`);
 export const fetchServerStats = (serverId) => api.get(`/servers/${serverId}/stats`);
 export const refreshServerStatus = (serverId) => api.get(`/servers/${serverId}/status`);
+export const createBackup = (serverId) => api.post(`/servers/${serverId}/backup`);
+export const fetchBackups = (serverId) => api.get(`/servers/${serverId}/backups`);
+export const deleteBackup = (serverId, backupName) => api.delete(`/servers/${serverId}/backups/${encodeURIComponent(backupName)}`);
+export const downloadBackup = (serverId, backupName) =>
+  api.get(`/servers/${serverId}/backups/${encodeURIComponent(backupName)}`, { responseType: 'blob' });
+export const downloadBackupUrl = (serverId, backupName) => `/api/servers/${serverId}/backups/${encodeURIComponent(backupName)}`;
 export const updateServer = (data) => api.post('/servers/update', data);
 export const getFiles = (serverId, path = '') =>
   api.get('/files', { params: { server_id: serverId, path } });

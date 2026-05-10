@@ -24,6 +24,7 @@ import {
 import ServerCard from '../components/ServerCard';
 import LoadingButton from '../components/LoadingButton';
 import PlayersChart from '../components/PlayersChart';
+import MetricsHistoryChart from '../components/MetricsHistoryChart';
 import ServerConsole from '../components/ServerConsole';
 import { resolveEngine, getEngineLabel } from '../utils/engine';
 
@@ -70,6 +71,8 @@ const Dashboard = () => {
   const [playersLoading, setPlayersLoading] = useState(false);
   const [playersError, setPlayersError] = useState('');
   const [chartHistory, setChartHistory] = useState([]);
+  const [chartTab, setChartTab] = useState('players');
+  const [metricsHistory, setMetricsHistory] = useState([]);
   const [serverFps, setServerFps] = useState(null);
   const [serverCpu, setServerCpu] = useState(null);
   const [serverMemory, setServerMemory] = useState(null);
@@ -367,6 +370,19 @@ const Dashboard = () => {
       setServerCpu(data.cpu ?? null);
       setServerMemory(data.memory ?? null);
       setServerDisk(data.disk ?? null);
+
+      // Atualizar histórico de métricas
+      setMetricsHistory((prev) => {
+        const newEntry = {
+          timestamp: new Date(),
+          cpu: data.cpu?.percent ?? null,
+          memory: data.memory?.percent ?? null,
+          ping: activeServer?.ping ?? null,
+        };
+        // Manter apenas os últimos 60 pontos (10 minutos com atualizações a cada 5s)
+        const updated = [...prev, newEntry];
+        return updated.length > 60 ? updated.slice(-60) : updated;
+      });
     } catch (error) {
       console.warn('Erro ao carregar estatísticas do servidor:', error);
       setServerFps(null);
@@ -557,8 +573,9 @@ const Dashboard = () => {
     handleRcon(activeServer.id, command.trim());
   };
 
-  const handleBackup = async () => {
-    // Backup ainda não implementado
+  const handleBackup = () => {
+  if (!activeServer) return;
+  navigate(`/backups?server_id=${activeServer.id}`);
   };
 
   const handleDelete = async (serverId) => {
@@ -749,7 +766,7 @@ const Dashboard = () => {
           const incomingLines = Array.isArray(data.lines) ? data.lines : [];
           const nextOffset = Number(data.offset || 0);
           const nextFile = data.file || null;
-          const shouldReset = data.truncated || (serverLogFileRef.current && nextFile !== serverLogFileRef.current);
+          const shouldReset = data.truncated || serverLogFileRef.current !== nextFile;
 
           const nextLines = shouldReset
             ? incomingLines
@@ -803,6 +820,7 @@ const Dashboard = () => {
     setPlayers([]);
     setPlayersError('');
     setChartHistory([]);
+    setMetricsHistory([]);
     return undefined;
   }, [activeServer]);
 
@@ -848,6 +866,23 @@ const Dashboard = () => {
   const diskDisplay = diskPercent != null ? `${diskPercent}%` : '—';
   const playersRows = players;
   const serverUptime = activeServer?.uptime || activeServer?.running_time || '—';
+
+  const formatPlayerIdentifier = (player) => {
+    if (!player.identifiers || !Array.isArray(player.identifiers) || player.identifiers.length === 0) {
+      return '';
+    }
+
+    const identifier = player.identifiers[0];
+    if (typeof identifier !== 'string') {
+      return '';
+    }
+
+    const parts = identifier.split(':');
+    const prefix = parts.shift();
+    const suffix = parts.join(':');
+    const truncatedSuffix = suffix.length > 18 ? `${suffix.slice(0, 18)}...` : suffix;
+    return prefix ? `${prefix}:${truncatedSuffix}` : truncatedSuffix;
+  };
 
   const scrollToConsole = () => {
     if (activeServer) {
@@ -1024,22 +1059,41 @@ const Dashboard = () => {
 
        <div className="card chart-card">
           <div className="card-header">
-            <h3>Gráfico de Jogadores</h3>
-            <small>Visão rápida em tempo real</small>
+            <h3>Monitoramento</h3>
+            <div className="chart-tabs">
+              <button
+                type="button"
+                className={`chart-tab ${chartTab === 'players' ? 'active' : ''}`}
+                onClick={() => setChartTab('players')}
+              >
+                Jogadores
+              </button>
+              <button
+                type="button"
+                className={`chart-tab ${chartTab === 'metrics' ? 'active' : ''}`}
+                onClick={() => setChartTab('metrics')}
+              >
+                Métricas
+              </button>
+            </div>
           </div>
           <div className="chart-panel">
-            {activeServer ? (
-              <PlayersChart
-                players={serverPlayers}
-                maxSlots={activeServer.limit_slots || 32}
-                chartHistory={chartHistory}
-              />
+            {chartTab === 'players' ? (
+              activeServer ? (
+                <PlayersChart
+                  players={serverPlayers}
+                  maxSlots={activeServer.limit_slots || 32}
+                  chartHistory={chartHistory}
+                />
+              ) : (
+                <PlayersChart
+                  players={0}
+                  maxSlots={32}
+                  chartHistory={[]}
+                />
+              )
             ) : (
-              <PlayersChart
-                players={0}
-                maxSlots={32}
-                chartHistory={[]}
-              />
+              <MetricsHistoryChart metricsHistory={metricsHistory} />
             )}
           </div>
         </div>
@@ -1140,8 +1194,8 @@ const Dashboard = () => {
               <div className="players-table-row players-table-head">
                 <span>ID</span>
                 <span>Nome</span>
-                <span>Score</span>
-                <span>Ping</span>
+                <span>{activeServerIsFiveM ? 'Ping' : 'Score'}</span>
+                <span>{activeServerIsFiveM ? 'Identificador' : 'Ping'}</span>
               </div>
               {playersLoading ? (
                 <div className="players-table-empty">Carregando jogadores...</div>
@@ -1152,8 +1206,17 @@ const Dashboard = () => {
                   <div key={player.id} className="players-table-row">
                     <span>{player.id}</span>
                     <span>{player.name}</span>
-                    <span>{player.score}</span>
-                    <span>{player.ping}</span>
+                    {activeServerIsFiveM ? (
+                      <>
+                        <span>{player.ping}</span>
+                        <span>{formatPlayerIdentifier(player)}</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>{player.score}</span>
+                        <span>{player.ping}</span>
+                      </>
+                    )}
                   </div>
                 ))
               ) : (
@@ -1273,8 +1336,8 @@ const Dashboard = () => {
                 <LoadingButton
                   loading={false}
                   onClick={handleBackup}
-                  disabled={true}
-                  title="Backup ainda não implementado"
+                  disabled={!activeServer}
+                  title="Ir para backups"
                   className="action-button quick-action-btn btn-backup"
                 >
                   Fazer Backup
