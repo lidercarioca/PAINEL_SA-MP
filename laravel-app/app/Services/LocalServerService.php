@@ -827,6 +827,96 @@ class LocalServerService
         $normalizedPath = str_replace('\\', '/', strtolower($path));
         return $normalizedPath !== '' && strpos($normalizedValue, $normalizedPath) !== false;
     }
+
+    protected function findFiveMRunBatParentPid(string $folder): ?int
+    {
+        if (!$this->isWindows()) {
+            return null;
+        }
+
+        $output = [];
+        $cmd = 'wmic process where "name=\'cmd.exe\'" get ProcessId,CommandLine /FORMAT:CSV';
+        exec($cmd, $output, $status);
+
+        $normalizedFolder = str_replace('\\', '/', strtolower(rtrim($folder, DIRECTORY_SEPARATOR)));
+
+        foreach ($output as $line) {
+            $line = trim($line);
+            if ($line === '' || stripos($line, 'ProcessId') !== false || stripos($line, 'CommandLine') !== false) {
+                continue;
+            }
+
+            $processInfo = $this->parseWmicProcessCsvLine($line);
+            if (!$processInfo) {
+                continue;
+            }
+
+            $commandLine = $processInfo['commandLine'];
+            $pid = (int) $processInfo['pid'];
+
+            // Skip if no command line
+            if (!$commandLine) {
+                continue;
+            }
+
+            // Check if command line contains run.bat or run.cmd and the folder path
+            $hasRunBat = stripos($commandLine, 'run.bat') !== false || stripos($commandLine, 'run.cmd') !== false;
+            $hasFolderPath = $this->stringContainsPath($commandLine, $normalizedFolder);
+
+            if ($hasRunBat && $hasFolderPath) {
+                ActionLogService::append("FiveM run.bat parent cmd.exe found: PID={$pid}, CommandLine={$commandLine}");
+                return $pid;
+            }
+        }
+
+        ActionLogService::append("FiveM run.bat parent cmd.exe not found for folder: {$normalizedFolder}");
+        return null;
+    }
+
+    protected function isMetricProcess(int $pid): bool
+    {
+        if (!$this->isWindows()) {
+            return false;
+        }
+
+        $output = [];
+        $cmd = 'wmic process where "ProcessId=' . $pid . '" get CommandLine /FORMAT:CSV';
+        exec($cmd, $output, $status);
+
+        foreach ($output as $line) {
+            $line = trim($line);
+            if ($line === '' || stripos($line, 'CommandLine') !== false) {
+                continue;
+            }
+
+            $processInfo = $this->parseWmicProcessCsvLine($line);
+            if (!$processInfo) {
+                continue;
+            }
+
+            $commandLine = $processInfo['commandLine'];
+
+            // Check for metric-related processes
+            $metricIndicators = [
+                'Get-ChildItem',
+                'Measure-Object',
+                'wmic cpu',
+                'wmic process get',
+                'netstat -ano',
+                'tasklist'
+            ];
+
+            foreach ($metricIndicators as $indicator) {
+                if (stripos($commandLine, $indicator) !== false) {
+                    ActionLogService::append("Metric process detected: PID={$pid}, CommandLine={$commandLine}");
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     protected function findFiveMMainProcess(string $folder, bool $allowEmptyCommandLine = false): ?int
     {
         if (!$this->isWindows()) {
@@ -914,35 +1004,54 @@ class LocalServerService
         $exe = null;
 
         if ($engine === 'fivem') {
+            // Step 1: Kill run.bat parent cmd.exe first
+            $cmdPid = $this->findFiveMRunBatParentPid($folder);
+            if ($cmdPid) {
+                ActionLogService::append("FiveM stop: Killing run.bat parent cmd.exe PID={$cmdPid}");
+                $outputs[] = $this->killByPid($cmdPid, true); // with children
+                sleep(1); // Give time for cmd.exe to terminate
+            }
+
+            // Step 2: Kill main FXServer process
             $mainPid = $this->findFiveMMainProcess($folder, false); // false = strict mode for stop
             if ($mainPid) {
                 $pids[] = $mainPid;
-                ActionLogService::append("Stopping FiveM server with main PID={$mainPid}");
-            } else {
-                ActionLogService::append("Stop FiveM: main process not found by strict scan, trying folder/port search");
-                $fallbackPids = $this->findProcessIds($folder, 'FXServer.exe');
-                if (!empty($fallbackPids)) {
-                    $pids = array_merge($pids, $fallbackPids);
-                    ActionLogService::append("Stop FiveM: found FXServer PIDs by folder search: " . implode(', ', $fallbackPids));
-                }
+                ActionLogService::append("FiveM stop: Killing main FXServer PID={$mainPid}");
+            }
 
-                if (empty($pids)) {
-                    $fxPids = $this->findFxServerProcessIds();
-                    if (count($fxPids) === 1) {
-                        ActionLogService::append("Stop FiveM: no folder-specific PID found, one FXServer.exe running, using taskkill fallback");
-                        $outputs[] = $this->stopSingleFxServerByImageName();
-                    } elseif (count($fxPids) > 1) {
-                        return [
-                            'success' => false,
-                            'message' => 'Existem múltiplos FXServer.exe em execução. Pare manualmente ou informe o PID correto.',
-                            'output' => implode(', ', $fxPids)
-                        ];
-                    } else {
-                        return [
-                            'success' => false,
-                            'message' => 'Nenhum processo FiveM encontrado para esta pasta/porta.'
-                        ];
+            // Step 3: Kill any remaining FXServer.exe in the folder
+            $fallbackPids = $this->findProcessIds($folder, 'FXServer.exe');
+            if (!empty($fallbackPids)) {
+                // Filter out metric processes (Get-ChildItem, Measure-Object, wmic cpu)
+                $filteredPids = [];
+                foreach ($fallbackPids as $pid) {
+                    if (!$this->isMetricProcess($pid)) {
+                        $filteredPids[] = $pid;
                     }
+                }
+                if (!empty($filteredPids)) {
+                    $pids = array_merge($pids, $filteredPids);
+                    ActionLogService::append("FiveM stop: Found additional FXServer PIDs in folder: " . implode(', ', $filteredPids));
+                }
+            }
+
+            // Step 4: If no PIDs found, try global fallback
+            if (empty($pids)) {
+                $fxPids = $this->findFxServerProcessIds();
+                if (count($fxPids) === 1) {
+                    ActionLogService::append("FiveM stop: No folder-specific PID found, one FXServer.exe running globally, using taskkill fallback");
+                    $outputs[] = $this->stopSingleFxServerByImageName();
+                } elseif (count($fxPids) > 1) {
+                    return [
+                        'success' => false,
+                        'message' => 'Existem múltiplos FXServer.exe em execução. Pare manualmente ou informe o PID correto.',
+                        'output' => implode(', ', $fxPids)
+                    ];
+                } else {
+                    return [
+                        'success' => false,
+                        'message' => 'Nenhum processo FiveM encontrado para esta pasta/porta.'
+                    ];
                 }
             }
         } else {
@@ -972,14 +1081,60 @@ class LocalServerService
             sleep(1);
 
             if ($engine === 'fivem') {
+                // For FiveM, comprehensive checks with different logic based on server state
                 $remaining = $this->findFiveMMainProcess($folder, false); // false = strict mode for stop
-                if ($remaining) {
+                $portStillInUse = !empty($server->port) && $this->isPortInUse((int) $server->port);
+                $httpStillResponsive = $this->isFivemHttpResponsive($server);
+
+                ActionLogService::append("FiveM stop verification: remaining_pid=" . ($remaining ?: 'null') .
+                    ", port_in_use=" . ($portStillInUse ? 'yes' : 'no') .
+                    ", http_responsive=" . ($httpStillResponsive ? 'yes' : 'no'));
+
+                // Check if we have any remaining processes
+                $hasRemainingProcesses = $remaining !== null;
+
+                // Check if we have any cmd.exe run.bat processes
+                $runBatParentPid = $this->findFiveMRunBatParentPid($folder);
+                $hasRunBatProcess = $runBatParentPid !== null;
+
+                // If we still have processes, that's a problem
+                if ($hasRemainingProcesses || $hasRunBatProcess) {
+                    ActionLogService::append("FiveM stop failed: still has processes (FXServer: " . ($remaining ?: 'none') . ", run.bat: " . ($runBatParentPid ?: 'none') . ")");
                     return [
                         'success' => false,
-                        'message' => 'Não foi possível encerrar completamente o servidor. Processo ainda em execução.',
-                        'output' => implode(' | ', $outputs)
+                        'message' => 'Não foi possível encerrar completamente o servidor FiveM. Processos ainda em execução.',
+                        'output' => implode(' | ', $outputs),
+                        'debug' => [
+                            'remaining_pid' => $remaining,
+                            'run_bat_pid' => $runBatParentPid,
+                            'port_in_use' => $portStillInUse,
+                            'http_responsive' => $httpStillResponsive
+                        ]
                     ];
                 }
+
+                // If port is still in LISTENING state (not just TIME_WAIT/SYN_SENT), that's also a problem
+                if ($portStillInUse) {
+                    $portOwnerInfo = $this->getPortOwnerInfo((int) $server->port);
+                    if ($portOwnerInfo) {
+                        ActionLogService::append("FiveM stop failed: Port " . $server->port . " still LISTENING by: " . json_encode($portOwnerInfo));
+                        return [
+                            'success' => false,
+                            'message' => 'Porta ainda está sendo usada por outro processo após stop.',
+                            'output' => implode(' | ', $outputs),
+                            'debug' => [
+                                'port_owner' => $portOwnerInfo,
+                                'remaining_pid' => $remaining,
+                                'run_bat_pid' => $runBatParentPid
+                            ]
+                        ];
+                    } else {
+                        // Port shows as in use but no LISTENING process found - this might be TIME_WAIT/SYN_SENT
+                        ActionLogService::append("FiveM stop: Port shows in use but no LISTENING process found (likely TIME_WAIT/SYN_SENT)");
+                    }
+                }
+
+                ActionLogService::append("FiveM stop successful: no processes remaining, port clean");
             } else {
                 $knownExecutables = $this->getKnownExecutables();
                 $remaining = [];
@@ -1093,10 +1248,100 @@ class LocalServerService
         return $cmd;
     }
 
+    protected function waitForPortRelease(Server $server): array
+    {
+        $folder = $this->resolveFolder($server->folder);
+        if (!$folder) {
+            return [
+                'success' => false,
+                'message' => 'Pasta do servidor inválida.'
+            ];
+        }
+
+        $port = (int) ($server->port ?? 30120);
+        $maxWaitTime = 15000; // 15 seconds in milliseconds
+        $checkInterval = 500; // 500ms
+        $elapsedTime = 0;
+
+        ActionLogService::append("[FiveM Wait] Starting port release check for port {$port}, max wait: {$maxWaitTime}ms");
+
+        while ($elapsedTime < $maxWaitTime) {
+            // Check if port is free
+            $portFree = !$this->isPortInUse($port);
+
+            // Check if FiveM main process is gone
+            $mainPid = $this->findFiveMMainProcess($folder, false);
+
+            ActionLogService::append("[FiveM Wait] Port free: " . ($portFree ? 'yes' : 'no') . ", MainPID: " . ($mainPid ? $mainPid : 'null') . " (elapsed: {$elapsedTime}ms)");
+
+            // Both conditions met - port free AND process gone
+            if ($portFree && $mainPid === null) {
+                ActionLogService::append("[FiveM Wait] Success! Port released and process terminated (elapsed: {$elapsedTime}ms)");
+                return [
+                    'success' => true,
+                    'message' => 'Port released and process terminated.'
+                ];
+            }
+
+            // Sleep and increment elapsed time
+            usleep($checkInterval * 1000); // Convert ms to microseconds
+            $elapsedTime += $checkInterval;
+        }
+
+        // Timeout reached, check final status
+        $portStillInUse = $this->isPortInUse($port);
+        $processStillRunning = $this->findFiveMMainProcess($folder, false) !== null;
+
+        if ($portStillInUse) {
+            ActionLogService::append("[FiveM Wait] TIMEOUT: Port still in use after {$maxWaitTime}ms");
+            return [
+                'success' => false,
+                'message' => 'FXServer não liberou a porta após stop. Verifique se existem outros processos usando a porta ' . $port . '.'
+            ];
+        }
+
+        if ($processStillRunning) {
+            ActionLogService::append("[FiveM Wait] TIMEOUT: FiveM process still running after {$maxWaitTime}ms");
+            return [
+                'success' => false,
+                'message' => 'FXServer não foi completamente encerrado após stop.'
+            ];
+        }
+
+        // Cleanup successful but took full timeout
+        ActionLogService::append("[FiveM Wait] Success after full {$maxWaitTime}ms wait period");
+        return [
+            'success' => true,
+            'message' => 'Port released after timeout period.'
+        ];
+    }
+
     public function restart(Server $server): array
     {
-        $this->stop($server);
-        sleep(1);
+        $engine = strtolower($server->engine ?? 'samp');
+        
+        // Stop the server
+        ActionLogService::append("[FiveM Restart] Stopping server...");
+        $stopResult = $this->stop($server);
+        if (!$stopResult['success']) {
+            return $stopResult;
+        }
+        
+        // For FiveM, wait for port release and process termination
+        if ($engine === 'fivem') {
+            ActionLogService::append("[FiveM Restart] Waiting for port release and process termination...");
+            $waitResult = $this->waitForPortRelease($server);
+            if (!$waitResult['success']) {
+                ActionLogService::append("[FiveM Restart] Port release wait failed: " . $waitResult['message']);
+                return $waitResult;
+            }
+            ActionLogService::append("[FiveM Restart] Port released successfully, starting server...");
+        } else {
+            sleep(1);
+        }
+        
+        // Start the server
+        ActionLogService::append("[FiveM Restart] Starting server...");
         return $this->start($server);
     }
 
@@ -1133,9 +1378,10 @@ class LocalServerService
                     $psRoot
                 );
 
-                $command = 'powershell -NoProfile -ExecutionPolicy Bypass -Command ' . escapeshellarg($psCommand);
+                // Encapsular em aspas duplas sem usar escapeshellarg para evitar problemas de encoding
+                $command = 'powershell -NoProfile -ExecutionPolicy Bypass -Command "' . str_replace('"', '\\"', $psCommand) . '"';
 
-                if (str_contains($command, '$quotedRoot') || str_contains($command, '$quotedBat') || str_contains($command, '" . ')) {
+                if (str_contains($command, '$quotedRoot') || str_contains($command, '$quotedBat')) {
                     throw new \RuntimeException('Comando PowerShell FiveM inválido: concatenação PHP vazou para a string final.');
                 }
 
@@ -1157,7 +1403,9 @@ class LocalServerService
     {
         $filePath = storage_path('logs/fivem-start-debug.ps1');
         $content = "runBatPath={$runBatPath}\nworkingDirectory={$rootPath}\ncommand={$command}\nfile_exists=" . (file_exists($runBatPath) ? '1' : '0') . "\nis_readable=" . (is_readable($runBatPath) ? '1' : '0') . "\n";
-        @file_put_contents($filePath, $content);
+        // Garantir que o conteúdo está em UTF-8 puro
+        $content = mb_convert_encoding($content, 'UTF-8', 'UTF-8');
+        @file_put_contents($filePath, $content, FILE_TEXT);
         ActionLogService::append("FiveM start debug file written: {$filePath}");
     }
 
@@ -1641,19 +1889,140 @@ class LocalServerService
                     break;
                 }
             } else {
-                if (preg_match('/^\s*TCP/i', $line) || preg_match('/^\s*UDP/i', $line)) {
-                    $portInUse = true;
-                    break;
+                // Windows: parse netstat -ano output more carefully
+                $line = trim($line);
+                if (preg_match('/^\s*TCP\s+([^:]+):(\d+)\s+([^:]+):(\d+)\s+(\w+)\s+(\d+)/i', $line, $matches)) {
+                    // TCP line: TCP local_addr:local_port remote_addr:remote_port state pid
+                    $localPort = (int) $matches[2];
+                    $state = strtoupper($matches[5]);
+
+                    if ($localPort === $port) {
+                        // Only consider LISTENING state as "port in use"
+                        if ($state === 'LISTENING') {
+                            $portInUse = true;
+                            ActionLogService::append("Port {$port} IN USE: TCP LISTENING on local port {$localPort}");
+                            break;
+                        } else {
+                            // Log other states but don't consider as "in use"
+                            ActionLogService::append("Port {$port} ignoring TCP {$state} connection (local:{$localPort} -> remote:{$matches[4]})");
+                        }
+                    }
+                } elseif (preg_match('/^\s*UDP\s+([^:]+):(\d+)\s+\*\:\*\s+(\d+)/i', $line, $matches)) {
+                    // UDP line: UDP local_addr:local_port *:* pid
+                    $localPort = (int) $matches[2];
+
+                    if ($localPort === $port) {
+                        $portInUse = true;
+                        ActionLogService::append("Port {$port} IN USE: UDP listening on local port {$localPort}");
+                        break;
+                    }
                 }
             }
         }
 
-        ActionLogService::append("Port {$port} check: " . ($portInUse ? 'IN USE' : 'FREE') . " (found " . count($output) . " lines)");
+        ActionLogService::append("Port {$port} final check: " . ($portInUse ? 'IN USE' : 'FREE') . " (found " . count($output) . " lines)");
         if (!empty($output)) {
             ActionLogService::append("Port {$port} details: " . implode(' | ', array_slice($output, 0, 3))); // Log first 3 lines
         }
 
         return $portInUse;
+    }
+
+    protected function getPortOwnerInfo(int $port): ?array
+    {
+        if (!$this->isWindows()) {
+            return null;
+        }
+
+        $output = [];
+        exec('netstat -ano | findstr ":' . $port . '"', $output);
+
+        foreach ($output as $line) {
+            if (preg_match('/^\s*TCP\s+([^:]+):(\d+)\s+([^:]+):(\d+)\s+(\w+)\s+(\d+)/i', $line, $matches)) {
+                // TCP line: TCP local_addr:local_port remote_addr:remote_port state pid
+                $localPort = (int) $matches[2];
+                $state = strtoupper($matches[5]);
+                $pid = (int) $matches[6];
+
+                if ($localPort === $port) {
+                    // Only return owner info if it's actually LISTENING
+                    if ($state === 'LISTENING') {
+                        // Get process info
+                        $processOutput = [];
+                        exec('wmic process where "ProcessId=' . $pid . '" get Name,CommandLine /FORMAT:CSV', $processOutput);
+
+                        $processName = 'Unknown';
+                        $commandLine = '';
+
+                        foreach ($processOutput as $procLine) {
+                            $procLine = trim($procLine);
+                            if ($procLine === '' || stripos($procLine, 'Name') !== false || stripos($procLine, 'CommandLine') !== false) {
+                                continue;
+                            }
+
+                            $procInfo = $this->parseWmicProcessCsvLine($procLine);
+                            if ($procInfo) {
+                                $processName = basename($procInfo['executablePath'] ?? 'Unknown');
+                                $commandLine = $procInfo['commandLine'] ?? '';
+                                break;
+                            }
+                        }
+
+                        return [
+                            'pid' => $pid,
+                            'process_name' => $processName,
+                            'command_line' => $commandLine,
+                            'state' => $state,
+                            'local_port' => $localPort,
+                            'remote_port' => (int) $matches[4],
+                            'protocol' => 'TCP'
+                        ];
+                    } else {
+                        // Log but don't return for non-LISTENING states
+                        ActionLogService::append("Port {$port} ignoring TCP {$state} connection (not LISTENING)");
+                    }
+                }
+            } elseif (preg_match('/^\s*UDP\s+([^:]+):(\d+)\s+\*\:\*\s+(\d+)/i', $line, $matches)) {
+                // UDP line: UDP local_addr:local_port *:* pid
+                $localPort = (int) $matches[2];
+                $pid = (int) $matches[3];
+
+                if ($localPort === $port) {
+                    // Get process info for UDP
+                    $processOutput = [];
+                    exec('wmic process where "ProcessId=' . $pid . '" get Name,CommandLine /FORMAT:CSV', $processOutput);
+
+                    $processName = 'Unknown';
+                    $commandLine = '';
+
+                    foreach ($processOutput as $procLine) {
+                        $procLine = trim($procLine);
+                        if ($procLine === '' || stripos($procLine, 'Name') !== false || stripos($procLine, 'CommandLine') !== false) {
+                            continue;
+                        }
+
+                        $procInfo = $this->parseWmicProcessCsvLine($procLine);
+                        if ($procInfo) {
+                            $processName = basename($procInfo['executablePath'] ?? 'Unknown');
+                            $commandLine = $procInfo['commandLine'] ?? '';
+                            break;
+                        }
+                    }
+
+                    return [
+                        'pid' => $pid,
+                        'process_name' => $processName,
+                        'command_line' => $commandLine,
+                        'state' => 'LISTENING', // UDP doesn't have states like TCP
+                        'local_port' => $localPort,
+                        'remote_port' => 0,
+                        'protocol' => 'UDP'
+                    ];
+                }
+            }
+        }
+
+        return null;
     }
 
     public function isServerPortInUse(int $port): bool
