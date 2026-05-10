@@ -34,6 +34,10 @@ Route::middleware('api.token')->group(function () {
     Route::post('/servers/restart', [ServerController::class, 'restart']);
     Route::post('/servers/suspend', [ServerController::class, 'suspend']);
     Route::post('/servers/command', [ServerController::class, 'command']);
+    Route::post('/servers/{serverId}/backup', [ServerController::class, 'createBackup']);
+    Route::get('/servers/{serverId}/backups', [ServerController::class, 'listBackups']);
+    Route::delete('/servers/{serverId}/backups/{backupName}', [ServerController::class, 'deleteBackup'])->where('backupName', '.*');
+    Route::get('/servers/{serverId}/backups/{backupName}', [ServerController::class, 'downloadBackup'])->where('backupName', '.*');
     Route::post('/rcon/send', [RconController::class, 'send']);
     Route::get('/plans', [PlanController::class, 'index']);
     Route::post('/plans', [PlanController::class, 'store']);

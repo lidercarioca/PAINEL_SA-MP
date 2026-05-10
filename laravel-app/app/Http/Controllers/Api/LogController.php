@@ -153,19 +153,26 @@ class LogController extends Controller
         $offset = max(0, (int) $request->query('offset', 0));
         $logPath = $this->getLatestFivemLogFile($server);
         if (!$logPath) {
-            ActionLogService::append("LogController::stream no FiveM log file found for server_id={$server->id}");
+            $this->debugLog("LogController::stream no FiveM log file found for server_id={$server->id}");
             return response()->json([
-                'success' => false,
-                'lines' => [],
-                'message' => 'Nenhum log FiveM encontrado em txData/default/logs',
-                'offset' => $offset,
+                'success' => true,
+                'lines' => ['Aguardando saída do FXServer...'],
+                'offset' => 0,
                 'file' => null,
+                'truncated' => false,
             ]);
         }
 
         $result = $this->readFivemConsoleStream($logPath, $offset, 300);
-        ActionLogService::append("LogController::stream server_id={$server->id}, file={$logPath}, requested_offset={$offset}, returned_lines=" . count($result['lines']) . ", next_offset=" . $result['offset']);
+        $this->debugLog("LogController::stream server_id={$server->id}, file={$logPath}, requested_offset={$offset}, returned_lines=" . count($result['lines']) . ", next_offset=" . $result['offset'] . ", truncated=" . ($result['truncated'] ? 'yes' : 'no'));
         return response()->json($result);
+    }
+
+    private function debugLog(string $message): void
+    {
+        if (config('app.debug')) {
+            ActionLogService::append($message);
+        }
     }
 
     private function readFivemConsoleStream(string $logPath, int $offset, int $maxLines = 300): array
@@ -193,14 +200,15 @@ class LogController extends Controller
             ];
         }
 
-        if ($offset <= 0 || $offset > $size) {
-            $lines = $this->tailFileLines($logPath, $maxLines);
+        $truncated = $offset > $size;
+        if ($offset <= 0 || $truncated) {
+            $lines = $this->tailFileLines($logPath, 100);
             return [
                 'success' => true,
                 'lines' => $lines,
                 'offset' => $size,
                 'file' => $logPath,
-                'truncated' => $offset > $size,
+                'truncated' => $truncated,
             ];
         }
 
@@ -224,6 +232,10 @@ class LogController extends Controller
         $lines = preg_split('/\r\n|\n|\r/', trim($content)) ?: [];
         $lines = array_filter(array_map(function ($line) {
             $line = trim($line);
+            if ($line === '') {
+                return null;
+            }
+            $line = $this->stripAnsi($line);
             return $line !== '' ? @iconv('UTF-8', 'UTF-8//IGNORE', $line) : null;
         }, $lines));
         $lines = array_values(array_filter($lines, fn ($line) => $line !== false));
@@ -274,19 +286,38 @@ class LogController extends Controller
             $lines = array_slice($lines, -$limit);
         }
 
-        return array_values(array_map(fn ($line) => trim($line), $lines));
+        return array_values(array_filter(array_map(function ($line) {
+            $line = trim($line);
+            if ($line === '') {
+                return null;
+            }
+            $line = $this->stripAnsi($line);
+            return $line !== '' ? @iconv('UTF-8', 'UTF-8//IGNORE', $line) : null;
+        }, $lines), fn ($line) => $line !== false && $line !== null));
+    }
+
+    private function stripAnsi(string $text): string
+    {
+        return preg_replace('/\x1B\[[0-9;?]*[A-Za-z]/', '', $text) ?: $text;
     }
 
     private function getLatestFivemLogFile(Server $server): ?string
     {
         $folder = rtrim($server->folder ?? '', DIRECTORY_SEPARATOR);
+        $defaultLogDir = $folder . DIRECTORY_SEPARATOR . 'txData' . DIRECTORY_SEPARATOR . 'default' . DIRECTORY_SEPARATOR . 'logs';
         $searchPaths = [
-            $folder . DIRECTORY_SEPARATOR . 'txData' . DIRECTORY_SEPARATOR . 'default' . DIRECTORY_SEPARATOR . 'logs',
+            $defaultLogDir,
             $folder . DIRECTORY_SEPARATOR . 'txData' . DIRECTORY_SEPARATOR . '*' . DIRECTORY_SEPARATOR . 'logs',
             $folder . DIRECTORY_SEPARATOR . 'logs',
         ];
 
-        ActionLogService::append("LogController::getLatestFivemLogFile server_id={$server->id}, engine=fivem, searchPaths=" . implode(' | ', $searchPaths));
+        $this->debugLog("LogController::getLatestFivemLogFile server_id={$server->id}, engine=fivem, searchPaths=" . implode(' | ', $searchPaths));
+
+        $serverLog = $defaultLogDir . DIRECTORY_SEPARATOR . 'server.log';
+        if (File::exists($serverLog)) {
+            $this->debugLog("LogController::getLatestFivemLogFile found server.log at {$serverLog}");
+            return $serverLog;
+        }
 
         foreach ($searchPaths as $searchPath) {
             $pattern = $this->normalizeGlobPath($searchPath . DIRECTORY_SEPARATOR . '*.log');
@@ -294,7 +325,7 @@ class LogController extends Controller
             $files = array_filter($files, 'is_file');
 
             if (empty($files)) {
-                ActionLogService::append("LogController::getLatestFivemLogFile no log files found in {$searchPath}");
+                $this->debugLog("LogController::getLatestFivemLogFile no log files found in {$searchPath}");
                 continue;
             }
 
@@ -309,7 +340,7 @@ class LogController extends Controller
             }
 
             if ($latestFile) {
-                ActionLogService::append("LogController::getLatestFivemLogFile selected file {$latestFile} from {$searchPath}");
+                $this->debugLog("LogController::getLatestFivemLogFile selected file {$latestFile} from {$searchPath}");
                 return $latestFile;
             }
         }

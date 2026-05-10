@@ -9,6 +9,7 @@ use App\Services\LocalServerService;
 use App\Services\RemoteCommandService;
 use App\Services\SampRconService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\JsonResponse;
 
@@ -308,8 +309,23 @@ class ServerController extends Controller
             return response()->json(['error' => 'Servidor não encontrado'], 404);
         }
 
+        $this->authorizeAdminOrOwner(request(), $server);
+
+        $engine = strtolower($server->engine ?? $this->guessEngine($server));
+
+        if ($engine === 'fivem') {
+            return $this->getFivemPlayers($server);
+        }
+
         if (empty($server->password)) {
-            return response()->json(['players' => [], 'count' => 0, 'message' => 'Senha RCON não configurada']);
+            return response()->json([
+                'success' => true,
+                'engine' => 'samp',
+                'count' => 0,
+                'max_slots' => $server->limit_slots ?? 0,
+                'players' => [],
+                'message' => 'Senha RCON não configurada',
+            ]);
         }
 
         $response = $rconService->sendCommandWithResponse(
@@ -320,12 +336,328 @@ class ServerController extends Controller
         );
 
         if ($response === null) {
-            return response()->json(['players' => [], 'count' => 0, 'message' => 'Não foi possível obter dados de jogadores online']);
+            return response()->json([
+                'success' => true,
+                'engine' => 'samp',
+                'count' => 0,
+                'max_slots' => $server->limit_slots ?? 0,
+                'players' => [],
+                'message' => 'Não foi possível obter dados de jogadores online',
+            ]);
         }
 
         $players = $this->parsePlayersResponse($response);
 
-        return response()->json(['players' => $players, 'count' => count($players), 'raw' => $response]);
+        return response()->json([
+            'success' => true,
+            'engine' => 'samp',
+            'count' => count($players),
+            'max_slots' => $server->limit_slots ?? 0,
+            'players' => $players,
+            'raw' => $response,
+        ]);
+    }
+
+    private function fetchUrl(string $url, int $connectTimeoutMs = 1000, int $timeoutMs = 2000): array
+    {
+        $startTime = microtime(true);
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT_MS => $connectTimeoutMs,
+            CURLOPT_TIMEOUT_MS => $timeoutMs,
+            CURLOPT_HTTPHEADER => [
+                'User-Agent: painel-samp/1.0',
+            ],
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+        ]);
+
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        return [
+            'response' => $response,
+            'httpCode' => $httpCode,
+            'error' => $error,
+            'durationMs' => round((microtime(true) - $startTime) * 1000),
+        ];
+    }
+
+    private function getFivemPlayers(Server $server): JsonResponse
+    {
+        $ip = $server->type === 'local' ? '127.0.0.1' : $server->ip;
+        $port = $server->port;
+        $url = "http://{$ip}:{$port}/players.json";
+
+        $result = $this->fetchUrl($url, 1000, 2000);
+        $response = $result['response'];
+        $httpCode = $result['httpCode'];
+        $error = $result['error'];
+
+        if ($httpCode !== 200 || $response === false || $error) {
+            ActionLogService::append("FiveM players fetch failed: server_id={$server->id}, url={$url}, http={$httpCode}, error=" . ($error ?: 'none'));
+            return response()->json([
+                'success' => true,
+                'engine' => 'fivem',
+                'count' => 0,
+                'max_slots' => $server->limit_slots ?? 32,
+                'players' => [],
+                'message' => 'Servidor FiveM offline ou indisponível',
+            ]);
+        }
+
+        $data = @json_decode($response, true);
+        if (!is_array($data) || !isset($data['players']) || !is_array($data['players'])) {
+            ActionLogService::append("FiveM players parse failed: server_id={$server->id}, url={$url}, response_invalid");
+            return response()->json([
+                'success' => true,
+                'engine' => 'fivem',
+                'count' => 0,
+                'max_slots' => $server->limit_slots ?? 32,
+                'players' => [],
+                'message' => 'Dados de jogadores FiveM inválidos',
+            ]);
+        }
+
+        $players = [];
+        foreach ($data['players'] as $index => $player) {
+            if (!is_array($player)) {
+                continue;
+            }
+
+            $identifiers = [];
+            if (isset($player['identifiers']) && is_array($player['identifiers'])) {
+                $identifiers = array_values(array_filter($player['identifiers'], fn ($value) => is_string($value) && $value !== ''));
+            }
+
+            $players[] = [
+                'id' => isset($player['id']) ? (int) $player['id'] : $index + 1,
+                'name' => $this->sanitizeUtf8String((string) ($player['name'] ?? ($player['endpoint'] ?? ''))),
+                'ping' => isset($player['ping']) ? (int) $player['ping'] : 0,
+                'score' => isset($player['score']) ? (int) $player['score'] : 0,
+                'identifiers' => $identifiers,
+                'endpoint' => isset($player['endpoint']) ? (string) $player['endpoint'] : '',
+                'raw' => $player,
+            ];
+        }
+
+        $maxSlots = $server->limit_slots ?? 32;
+        if (isset($data['vars']['sv_maxclients'])) {
+            $maxSlots = (int) $data['vars']['sv_maxclients'];
+        }
+
+        if (isset($data['server']['sv_maxclients'])) {
+            $maxSlots = (int) $data['server']['sv_maxclients'];
+        }
+
+        return response()->json([
+            'success' => true,
+            'engine' => 'fivem',
+            'count' => count($players),
+            'max_slots' => $maxSlots,
+            'players' => $players,
+            'raw' => $data,
+        ]);
+    }
+
+    public function createBackup(int $serverId)
+    {
+        $server = $this->findServer($serverId);
+        if (!$server) {
+            return response()->json(['success' => false, 'message' => 'Servidor não encontrado'], 404);
+        }
+
+        $this->authorizeAdminOrOwner(request(), $server);
+
+        $folder = $this->normalizeFolderPath($server->folder);
+        if (!$folder || !is_dir($folder)) {
+            return response()->json(['success' => false, 'message' => 'Pasta do servidor inválida'], 400);
+        }
+
+        $engine = strtolower($server->engine ?? $this->guessEngine($server));
+        $timestamp = date('Y-m-d-H-i-s');
+        $backupName = sprintf('server-%s-%s-%s.zip', $server->id, $engine, $timestamp);
+        $backupFolder = $this->getBackupFolder($server);
+        File::ensureDirectoryExists($backupFolder);
+        $backupPath = $backupFolder . DIRECTORY_SEPARATOR . $backupName;
+
+        $zip = new \ZipArchive();
+        if ($zip->open($backupPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            return response()->json(['success' => false, 'message' => 'Não foi possível criar o arquivo de backup'], 500);
+        }
+
+        if ($engine === 'fivem') {
+            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'run.bat', 'run.bat');
+            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'run.cmd', 'run.cmd');
+            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'txData' . DIRECTORY_SEPARATOR . 'default' . DIRECTORY_SEPARATOR . 'server.cfg', 'txData/default/server.cfg');
+            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'zirix-data' . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'config.cfg', 'zirix-data/config/config.cfg');
+            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'resources', 'resources');
+            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'txData' . DIRECTORY_SEPARATOR . 'default' . DIRECTORY_SEPARATOR . 'logs', 'txData/default/logs');
+        } else {
+            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'server.cfg', 'server.cfg');
+            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'gamemodes', 'gamemodes');
+            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'filterscripts', 'filterscripts');
+            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'scriptfiles', 'scriptfiles');
+            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'plugins', 'plugins');
+        }
+
+        $zip->close();
+
+        $size = $this->formatBytes(filesize($backupPath));
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Backup criado com sucesso',
+            'file' => $backupName,
+            'size' => $size,
+        ]);
+    }
+
+    public function listBackups(int $serverId)
+    {
+        $server = $this->findServer($serverId);
+        if (!$server) {
+            return response()->json(['success' => false, 'message' => 'Servidor não encontrado'], 404);
+        }
+
+        $this->authorizeAdminOrOwner(request(), $server);
+
+        $backupFolder = $this->getBackupFolder($server);
+        if (!is_dir($backupFolder)) {
+            return response()->json(['success' => true, 'backups' => []]);
+        }
+
+        $files = File::files($backupFolder);
+        $backups = array_map(function ($file) use ($server) {
+            return [
+                'name' => $file->getFilename(),
+                'size' => $this->formatBytes($file->getSize()),
+                'created_at' => date('Y-m-d H:i:s', $file->getMTime()),
+                'engine' => $this->extractEngineFromBackupName($file->getFilename(), $server->id),
+            ];
+        }, $files);
+
+        usort($backups, fn ($a, $b) => strcmp($b['created_at'], $a['created_at']));
+
+        return response()->json(['success' => true, 'backups' => $backups]);
+    }
+
+    public function deleteBackup(int $serverId, string $backupName)
+    {
+        $server = $this->findServer($serverId);
+        if (!$server) {
+            return response()->json(['success' => false, 'message' => 'Servidor não encontrado'], 404);
+        }
+
+        $this->authorizeAdminOrOwner(request(), $server);
+
+        $backupName = basename($backupName);
+        $backupPath = $this->getBackupFolder($server) . DIRECTORY_SEPARATOR . $backupName;
+        if (!File::exists($backupPath)) {
+            return response()->json(['success' => false, 'message' => 'Backup não encontrado'], 404);
+        }
+
+        File::delete($backupPath);
+        return response()->json(['success' => true, 'message' => 'Backup excluído com sucesso']);
+    }
+
+    public function downloadBackup(int $serverId, string $backupName)
+    {
+        $server = $this->findServer($serverId);
+        if (!$server) {
+            return response()->json(['success' => false, 'message' => 'Servidor não encontrado'], 404);
+        }
+
+        $this->authorizeAdminOrOwner(request(), $server);
+
+        $backupName = basename($backupName);
+        $backupPath = $this->getBackupFolder($server) . DIRECTORY_SEPARATOR . $backupName;
+        if (!File::exists($backupPath)) {
+            return response()->json(['success' => false, 'message' => 'Backup não encontrado'], 404);
+        }
+
+        return response()->download($backupPath, $backupName, [
+            'Content-Type' => 'application/zip',
+        ]);
+    }
+
+    private function getBackupFolder(Server $server): string
+    {
+        return storage_path('app' . DIRECTORY_SEPARATOR . 'backups' . DIRECTORY_SEPARATOR . $server->id);
+    }
+
+    private function addFileIfExists(\ZipArchive $zip, string $filePath, string $zipPath): void
+    {
+        if (File::exists($filePath) && File::isFile($filePath)) {
+            $zip->addFile($filePath, $zipPath);
+        }
+    }
+
+    private function addDirectoryToZip(\ZipArchive $zip, string $folderPath, string $zipBasePath): void
+    {
+        if (!File::exists($folderPath) || !File::isDirectory($folderPath)) {
+            return;
+        }
+
+        $files = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($folderPath, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+
+        foreach ($files as $file) {
+            if ($file->isDir()) {
+                continue;
+            }
+
+            if ($this->shouldExcludeBackupPath($file->getPathname())) {
+                continue;
+            }
+
+            $relativeName = ltrim(str_replace($folderPath, '', $file->getPathname()), DIRECTORY_SEPARATOR);
+            $relativeName = $zipBasePath . DIRECTORY_SEPARATOR . str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $relativeName);
+            $zip->addFile($file->getPathname(), $relativeName);
+        }
+    }
+
+    private function shouldExcludeBackupPath(string $path): bool
+    {
+        $normalized = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $path);
+        $parts = explode(DIRECTORY_SEPARATOR, $normalized);
+        foreach ($parts as $part) {
+            if (in_array(strtolower($part), ['cache', 'node_modules', '.git', 'backups'], true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function extractEngineFromBackupName(string $backupName, int $serverId): string
+    {
+        $parts = explode('-', $backupName);
+        if (count($parts) >= 4 && $parts[0] === 'server' && (int) $parts[1] === $serverId) {
+            return $parts[2];
+        }
+
+        return 'unknown';
+    }
+
+    private function formatBytes(int $bytes): string
+    {
+        if ($bytes >= 1073741824) {
+            return number_format($bytes / 1073741824, 2) . ' GB';
+        }
+        if ($bytes >= 1048576) {
+            return number_format($bytes / 1048576, 2) . ' MB';
+        }
+        if ($bytes >= 1024) {
+            return number_format($bytes / 1024, 2) . ' KB';
+        }
+        return $bytes . ' B';
     }
 
     public function stats(int $serverId, SampRconService $rconService, LocalServerService $localServerService)
