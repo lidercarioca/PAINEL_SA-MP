@@ -20,11 +20,25 @@ class LocalServerService
 
         $engine = strtolower($server->engine ?? 'samp');
         $useRunBat = false;
+        $runBatPath = null;
+
+        ActionLogService::append("Start debug: engine={$engine}, rootPath={$rootPath}");
 
         if ($engine === 'fivem') {
-            $exe = $this->resolveFiveMExecutable($rootPath);
-            $useRunBat = $exe && strtolower(basename($exe)) === 'run.bat';
-            $configFile = $useRunBat ? null : $this->resolveFiveMConfig($rootPath);
+            $runBatPath = $this->locateRunBatForFiveM($rootPath);
+            if ($runBatPath) {
+                $exe = basename($runBatPath);
+                $useRunBat = true;
+                $configFile = null;
+                ActionLogService::append("Start debug: runBatPath={$runBatPath}, file_exists=" . (file_exists($runBatPath) ? '1' : '0'));
+            } else {
+                // FiveM sem run.bat não deve iniciar
+                ActionLogService::append("Start debug: run.bat não encontrado para FiveM, abortando");
+                return [
+                    'success' => false,
+                    'message' => 'run.bat não encontrado na pasta do servidor FiveM.'
+                ];
+            }
         } else {
             $exe = $this->resolveSampExecutable($rootPath);
             $configFile = $this->resolveSampConfig($rootPath);
@@ -87,24 +101,46 @@ class LocalServerService
         }
 
         try {
-            $existingPids = $this->findProcessIds($rootPath, $exe);
-            if (!empty($existingPids)) {
-                return [
-                    'success' => true,
-                    'message' => 'Servidor já estava em execução.',
-                    'output' => null,
-                ];
+            if ($engine === 'fivem') {
+                $existingMainPid = $this->findFiveMMainProcess($rootPath, false);
+                $existingHttp = $this->isFivemHttpResponsive($server);
+
+                if ($existingMainPid || $existingHttp) {
+                    return [
+                        'success' => true,
+                        'status' => 'online',
+                        'message' => 'Servidor já estava em execução.',
+                        'output' => null,
+                        'debug' => 'existing_pid=' . ($existingMainPid ?: 'none') . ', http=' . ($existingHttp ? 'ok' : 'failed'),
+                    ];
+                }
+            } else {
+                $existingPids = $this->findProcessIds($rootPath, $exe);
+                if (!empty($existingPids)) {
+                    return [
+                        'success' => true,
+                        'status' => 'online',
+                        'message' => 'Servidor já estava em execução.',
+                        'output' => null,
+                    ];
+                }
             }
 
-            $cmd = $this->buildStartCommandByEngine($server, $rootPath, $exe, $configFile);
-            ActionLogService::append("Start resolver: engine={$engine}, rootPath={$rootPath}, executablePath={$executablePath}, configPath={$configPath}, workingDirectory={$rootPath}, command={$cmd}");
-            pclose(popen($cmd, "r"));
+            $cmd = $this->buildStartCommandByEngine($server, $rootPath, $exe, $configFile, $runBatPath);
+            ActionLogService::append("Start resolver: engine={$engine}, rootPath={$rootPath}, executablePath={$executablePath}, configPath={$configPath}, workingDirectory={$rootPath}, useRunBat=" . ($useRunBat ? '1' : '0') . ", command={$cmd}");
 
-            $started = $this->waitForServerStart($rootPath, $exe, $server->port, $engine);
+            pclose(popen($cmd, "r"));
+            $startDebug = null;
+            $startError = null;
+            $started = $this->waitForServerStart($server, false, $startDebug, $startError);
+
             if (!$started) {
+                $portStatus = (!empty($server->port) && $this->isPortInUse((int) $server->port)) ? 'port_in_use' : 'port_free';
+                ActionLogService::append("Start failed: command={$cmd}, port={$server->port}, portStatus={$portStatus}");
                 return [
                     'success' => false,
-                    'message' => 'Falha ao iniciar o servidor. O processo não foi encontrado após o comando de start.',
+                    'message' => $startError ?? 'Falha ao iniciar o servidor. Verifique os detalhes de debug.',
+                    'debug' => trim(($startDebug ?? '') . " | port_status={$portStatus}"),
                     'output' => $cmd
                 ];
             }
@@ -121,6 +157,63 @@ class LocalServerService
                 'message' => $e->getMessage()
             ];
         }
+    }
+
+    protected function captureCommandOutput(string $cmd, int $timeoutMs = 1000): string
+    {
+        $output = '';
+        $handle = @popen($cmd, 'r');
+        if ($handle === false || !is_resource($handle)) {
+            return '';
+        }
+
+        stream_set_blocking($handle, false);
+        $startTime = microtime(true);
+
+        while (!feof($handle) && (microtime(true) - $startTime) * 1000 < $timeoutMs) {
+            $line = fgets($handle);
+            if ($line !== false) {
+                $output .= $line;
+                if (!empty(trim($output))) {
+                    break;
+                }
+            }
+            usleep(50000);
+        }
+
+        pclose($handle);
+        return trim($output);
+    }
+
+    protected function parseWmicProcessCsvLine(string $line): ?array
+    {
+        $parts = str_getcsv($line);
+        if (count($parts) < 3) {
+            return null;
+        }
+
+        $parts = array_map('trim', $parts);
+        $count = count($parts);
+
+        // WMIC CSV may output [Node,CommandLine,ExecutablePath,ProcessId]
+        // or [CommandLine,ExecutablePath,ProcessId]
+        if ($count >= 4) {
+            return [
+                'commandLine' => $parts[$count - 3] ?? '',
+                'executablePath' => $parts[$count - 2] ?? '',
+                'pid' => $parts[$count - 1] ?? '',
+            ];
+        }
+
+        if ($count === 3) {
+            return [
+                'commandLine' => $parts[0] ?? '',
+                'executablePath' => $parts[1] ?? '',
+                'pid' => $parts[2] ?? '',
+            ];
+        }
+
+        return null;
     }
 
     protected function getKnownExecutables(): array
@@ -162,6 +255,18 @@ class LocalServerService
     protected function resolveSampConfig(string $rootPath): ?string
     {
         return file_exists($rootPath . DIRECTORY_SEPARATOR . 'server.cfg') ? 'server.cfg' : null;
+    }
+
+    protected function locateRunBatForFiveM(string $folder): ?string
+    {
+        $candidates = ['run.bat', 'run.cmd'];
+        foreach ($candidates as $candidate) {
+            $path = rtrim($folder, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $candidate;
+            if (file_exists($path)) {
+                return $path;
+            }
+        }
+        return null;
     }
 
     protected function resolveServerConfig(string $rootPath, string $engine): ?string
@@ -241,23 +346,87 @@ class LocalServerService
         }
 
         $engine = strtolower($server->engine ?? 'samp');
+
         if ($engine === 'fivem') {
-            $exe = $this->resolveFiveMExecutable($rootPath);
-        } else {
-            $exe = $this->resolveSampExecutable($rootPath);
+            if (!empty($server->port) && $this->isFivemHttpResponsive($server)) {
+                ActionLogService::append("[FiveM] Server RUNNING: HTTP endpoint responsive on port {$server->port}");
+                return true;
+            }
+
+            $mainPid = $this->findFiveMMainProcess($rootPath, false); // strict mode for status check
+            if ($mainPid) {
+                ActionLogService::append("[FiveM] Server RUNNING: FXServer main PID={$mainPid} found");
+                return true;
+            }
+
+            if (!empty($server->port) && $this->isPortInUse((int) $server->port)) {
+                ActionLogService::append("[FiveM] Server NOT RUNNING: port {$server->port} is OPEN but ignored for FiveM status");
+            } else {
+                ActionLogService::append("[FiveM] Server NOT RUNNING: no HTTP response and no FXServer process");
+            }
+
+            return false;
         }
 
+        $exe = $this->resolveSampExecutable($rootPath);
         if (!$exe) {
             return false;
         }
 
         $pids = $this->findProcessIds($rootPath, $exe);
         if (!empty($pids)) {
+            ActionLogService::append("SA-MP Server RUNNING: process {$exe} found");
             return true;
         }
 
         if (!empty($server->port) && $this->isPortInUse((int) $server->port)) {
+            ActionLogService::append("SA-MP Server RUNNING: port {$server->port} is OPEN");
             return true;
+        }
+
+        ActionLogService::append("SA-MP Server NOT RUNNING: no process and no port open");
+        return false;
+    }
+
+    public function getServerStatus(Server $server): string
+    {
+        return $this->isRunning($server) ? 'online' : 'offline';
+    }
+
+    protected function isFivemHttpResponsive(Server $server): bool
+    {
+        if (empty($server->port)) {
+            return false;
+        }
+
+        $ip = $server->type === 'local' ? '127.0.0.1' : $server->ip;
+        $urls = [
+            "http://{$ip}:{$server->port}/info.json",
+            "http://{$ip}:{$server->port}/players.json"
+        ];
+
+        foreach ($urls as $url) {
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $url,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT_MS => 1000,
+                CURLOPT_TIMEOUT_MS => 2000,
+                CURLOPT_HTTPHEADER => [
+                    'User-Agent: painel-samp/1.0'
+                ],
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_SSL_VERIFYHOST => false,
+            ]);
+
+            curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+
+            if ($httpCode === 200 && empty($error)) {
+                return true;
+            }
         }
 
         return false;
@@ -343,6 +512,12 @@ class LocalServerService
             return null;
         }
 
+        $engine = strtolower($server->engine ?? 'samp');
+        if ($engine === 'fivem') {
+            return $this->getFiveMServerMemoryUsage($server);
+        }
+
+        // SA-MP: usar lógica existente
         $folder = $this->resolveFolder($server->folder);
         if (!$folder || !is_dir($folder)) {
             return null;
@@ -387,12 +562,68 @@ class LocalServerService
         ];
     }
 
+    protected function getFiveMServerMemoryUsage(Server $server): ?array
+    {
+        $folder = $this->resolveFolder($server->folder);
+        if (!$folder || !is_dir($folder)) {
+            ActionLogService::append("FiveM RAM: invalid folder {$server->folder}");
+            return null;
+        }
+
+        // Usar PID salvo se existir e for válido
+        $pid = null;
+        if ($server->pid && $this->isProcessRunningByPid($server->pid)) {
+            $pid = $server->pid;
+            ActionLogService::append("FiveM RAM: using saved PID={$pid} for server {$server->id}");
+        } else {
+            // Tentar localizar PID principal
+            $pid = $this->findFiveMMainProcess($folder, false);
+            if ($pid) {
+                // Salvar PID no banco
+                $server->update(['pid' => $pid]);
+                ActionLogService::append("FiveM RAM: found and saved PID={$pid} for server {$server->id}");
+            } else {
+                ActionLogService::append("FiveM RAM: no valid PID found for server {$server->id}");
+                return null;
+            }
+        }
+
+        $memoryBytes = $this->getProcessWorkingSetSize($pid);
+        if ($memoryBytes === null || $memoryBytes <= 0) {
+            ActionLogService::append("FiveM RAM: failed to get memory for PID={$pid}, server {$server->id}");
+            return null;
+        }
+
+        $memoryLimitBytes = null;
+        if ($server->limit_ram !== null && $server->limit_ram > 0) {
+            $memoryLimitBytes = (int) $server->limit_ram * 1024 * 1024;
+        }
+
+        $percent = null;
+        if ($memoryLimitBytes !== null && $memoryLimitBytes > 0) {
+            $percent = round(($memoryBytes / $memoryLimitBytes) * 100, 1);
+        }
+
+        ActionLogService::append("FiveM RAM: server_id={$server->id}, engine=fivem, pid={$pid}, ram_process=" . round($memoryBytes / 1024 / 1024, 1) . "MB");
+        return [
+            'used' => $memoryBytes,
+            'total' => $memoryLimitBytes,
+            'percent' => $percent,
+        ];
+    }
+
     public function getServerDiskUsage(Server $server): ?array
     {
         if ($server->type !== 'local') {
             return null;
         }
 
+        $engine = strtolower($server->engine ?? 'samp');
+        if ($engine === 'fivem') {
+            return $this->getFiveMServerDiskUsage($server);
+        }
+
+        // SA-MP: usar lógica existente (disco do sistema)
         $folder = $this->resolveFolder($server->folder);
         if (!$folder || !is_dir($folder)) {
             return null;
@@ -417,12 +648,52 @@ class LocalServerService
         ];
     }
 
+    protected function getFiveMServerDiskUsage(Server $server): ?array
+    {
+        $folder = $this->resolveFolder($server->folder);
+        if (!$folder || !is_dir($folder)) {
+            ActionLogService::append("FiveM Disk: invalid folder {$server->folder}");
+            return null;
+        }
+
+        // Calcular tamanho da pasta do servidor
+        $usedBytes = $this->getFolderSize($folder);
+        if ($usedBytes === null) {
+            ActionLogService::append("FiveM Disk: failed to calculate folder size for {$folder}");
+            return null;
+        }
+
+        $limitBytes = null;
+        if ($server->disk_limit_gb !== null && $server->disk_limit_gb > 0) {
+            $limitBytes = (int) $server->disk_limit_gb * 1024 * 1024 * 1024; // GB to bytes
+        }
+
+        $percent = null;
+        if ($limitBytes !== null && $limitBytes > 0) {
+            $percent = round(($usedBytes / $limitBytes) * 100, 1);
+        }
+
+        ActionLogService::append("FiveM Disk: server_id={$server->id}, engine=fivem, folder_used=" . round($usedBytes / 1024 / 1024 / 1024, 2) . "GB, limit=" . ($limitBytes ? round($limitBytes / 1024 / 1024 / 1024, 2) . "GB" : "none"));
+        return [
+            'used' => $usedBytes,
+            'total' => $limitBytes,
+            'percent' => $percent,
+            'path' => $folder,
+        ];
+    }
+
     public function getServerProcessCpuUsage(Server $server): ?array
     {
         if ($server->type !== 'local') {
             return null;
         }
 
+        $engine = strtolower($server->engine ?? 'samp');
+        if ($engine === 'fivem') {
+            return $this->getFiveMServerCpuUsage($server);
+        }
+
+        // SA-MP: usar lógica existente
         $folder = $this->resolveFolder($server->folder);
         if (!$folder || !is_dir($folder)) {
             return null;
@@ -455,6 +726,44 @@ class LocalServerService
 
         return [
             'percent' => round($percent, 1),
+        ];
+    }
+
+    protected function getFiveMServerCpuUsage(Server $server): ?array
+    {
+        $folder = $this->resolveFolder($server->folder);
+        if (!$folder || !is_dir($folder)) {
+            ActionLogService::append("FiveM CPU: invalid folder {$server->folder}");
+            return null;
+        }
+
+        // Usar PID salvo se existir e for válido
+        $pid = null;
+        if ($server->pid && $this->isProcessRunningByPid($server->pid)) {
+            $pid = $server->pid;
+            ActionLogService::append("FiveM CPU: using saved PID={$pid} for server {$server->id}");
+        } else {
+            // Tentar localizar PID principal
+            $pid = $this->findFiveMMainProcess($folder, false);
+            if ($pid) {
+                // Salvar PID no banco
+                $server->update(['pid' => $pid]);
+                ActionLogService::append("FiveM CPU: found and saved PID={$pid} for server {$server->id}");
+            } else {
+                ActionLogService::append("FiveM CPU: no valid PID found for server {$server->id}");
+                return null;
+            }
+        }
+
+        $cpuPercent = $this->getProcessCpuPercent($pid);
+        if ($cpuPercent === null) {
+            ActionLogService::append("FiveM CPU: failed to get CPU for PID={$pid}, server {$server->id}");
+            return null;
+        }
+
+        ActionLogService::append("FiveM CPU: server_id={$server->id}, engine=fivem, pid={$pid}, cpu_process={$cpuPercent}%");
+        return [
+            'percent' => round($cpuPercent, 1),
         ];
     }
 
@@ -518,7 +827,76 @@ class LocalServerService
         $normalizedPath = str_replace('\\', '/', strtolower($path));
         return $normalizedPath !== '' && strpos($normalizedValue, $normalizedPath) !== false;
     }
+    protected function findFiveMMainProcess(string $folder, bool $allowEmptyCommandLine = false): ?int
+    {
+        if (!$this->isWindows()) {
+            return null;
+        }
 
+        $output = [];
+        $cmd = 'wmic process where "name=\'FXServer.exe\'" get ProcessId,ExecutablePath,CommandLine /FORMAT:CSV';
+        exec($cmd, $output, $status);
+
+        $ignoredPids = [];
+        $mainPid = null;
+        $normalizedFolder = str_replace('\\', '/', strtolower(rtrim($folder, DIRECTORY_SEPARATOR)));
+        $allProcesses = [];
+
+        foreach ($output as $line) {
+            $line = trim($line);
+            if ($line === '' || stripos($line, 'ProcessId') !== false || stripos($line, 'CommandLine') !== false || stripos($line, 'ExecutablePath') !== false) {
+                continue;
+            }
+
+            $processInfo = $this->parseWmicProcessCsvLine($line);
+            if (!$processInfo) {
+                continue;
+            }
+
+            $commandLine = $processInfo['commandLine'];
+            $executablePath = $processInfo['executablePath'];
+            $pid = (int) $processInfo['pid'];
+            $allProcesses[] = "PID={$pid}, ExecutablePath={$executablePath}, CommandLine={$commandLine}";
+
+            if (!$commandLine) {
+                ActionLogService::append("FiveM process PID={$pid} has empty CommandLine, ignoring");
+                $ignoredPids[] = $pid;
+                continue;
+            }
+
+            if (stripos($commandLine, '-dumpserver') !== false || stripos($commandLine, '-parentpid') !== false) {
+                ActionLogService::append("FiveM dump/parent process PID={$pid}, ignoring: {$commandLine}");
+                $ignoredPids[] = $pid;
+                continue;
+            }
+
+            if (stripos($commandLine, '+exec') === false) {
+                ActionLogService::append("FiveM process PID={$pid} has no +exec, ignoring: {$commandLine}");
+                $ignoredPids[] = $pid;
+                continue;
+            }
+
+            $normalizedExePath = str_replace('\\', '/', strtolower($executablePath));
+            $exeInFolder = strpos($normalizedExePath, $normalizedFolder) !== false;
+            $hasConfigFile = stripos($commandLine, 'config.cfg') !== false || stripos($commandLine, 'server.cfg') !== false;
+
+            if ($exeInFolder && $hasConfigFile) {
+                $mainPid = $pid;
+                ActionLogService::append("FiveM main process selected PID={$pid} with ExecutablePath={$executablePath} and CommandLine: {$commandLine}");
+                break;
+            }
+
+            ActionLogService::append("FiveM process PID={$pid} ignored: ExecutablePath={$executablePath}, commandLine={$commandLine}");
+            $ignoredPids[] = $pid;
+        }
+
+        ActionLogService::append("FiveM process scan complete. All processes: " . implode(' | ', $allProcesses));
+        if (!$mainPid && !empty($ignoredPids)) {
+            ActionLogService::append("FiveM main process not found. Ignored PIDs: " . implode(', ', $ignoredPids));
+        }
+
+        return $mainPid;
+    }
     public function stop(Server $server): array
     {
         $folder = $this->resolveFolder($server->folder);
@@ -530,49 +908,92 @@ class LocalServerService
             ];
         }
 
-        $knownExecutables = $this->getKnownExecutables();
-        $exe = $this->findExecutable($folder, $knownExecutables);
+        $engine = strtolower($server->engine ?? 'samp');
         $pids = [];
+        $outputs = [];
+        $exe = null;
 
-        if ($exe) {
-            $pids = $this->findProcessIds($folder, $exe);
+        if ($engine === 'fivem') {
+            $mainPid = $this->findFiveMMainProcess($folder, false); // false = strict mode for stop
+            if ($mainPid) {
+                $pids[] = $mainPid;
+                ActionLogService::append("Stopping FiveM server with main PID={$mainPid}");
+            } else {
+                ActionLogService::append("Stop FiveM: main process not found by strict scan, trying folder/port search");
+                $fallbackPids = $this->findProcessIds($folder, 'FXServer.exe');
+                if (!empty($fallbackPids)) {
+                    $pids = array_merge($pids, $fallbackPids);
+                    ActionLogService::append("Stop FiveM: found FXServer PIDs by folder search: " . implode(', ', $fallbackPids));
+                }
+
+                if (empty($pids)) {
+                    $fxPids = $this->findFxServerProcessIds();
+                    if (count($fxPids) === 1) {
+                        ActionLogService::append("Stop FiveM: no folder-specific PID found, one FXServer.exe running, using taskkill fallback");
+                        $outputs[] = $this->stopSingleFxServerByImageName();
+                    } elseif (count($fxPids) > 1) {
+                        return [
+                            'success' => false,
+                            'message' => 'Existem múltiplos FXServer.exe em execução. Pare manualmente ou informe o PID correto.',
+                            'output' => implode(', ', $fxPids)
+                        ];
+                    } else {
+                        return [
+                            'success' => false,
+                            'message' => 'Nenhum processo FiveM encontrado para esta pasta/porta.'
+                        ];
+                    }
+                }
+            }
         } else {
-            $pids = $this->findProcessIdsForKnownExecutables($folder, $knownExecutables);
-            if (empty($pids) && !$this->isAnyKnownProcessRunning($knownExecutables)) {
-                return [
-                    'success' => false,
-                    'message' => 'Executável não encontrado para encerrar.'
-                ];
+            $knownExecutables = $this->getKnownExecutables();
+            $exe = $this->findExecutable($folder, $knownExecutables);
+
+            if ($exe) {
+                $pids = $this->findProcessIds($folder, $exe);
+            } else {
+                $pids = $this->findProcessIdsForKnownExecutables($folder, $knownExecutables);
+                if (empty($pids) && !$this->isAnyKnownProcessRunning($knownExecutables)) {
+                    return [
+                        'success' => false,
+                        'message' => 'Executável não encontrado para encerrar.'
+                    ];
+                }
             }
         }
 
         try {
-            $outputs = [];
-
             if (!empty($pids)) {
                 foreach ($pids as $pid) {
                     $outputs[] = $this->killByPid($pid);
                 }
             }
 
-            foreach ($knownExecutables as $name) {
-                if ($this->isProcessRunning($name)) {
-                    $outputs[] = $this->killByImageName($name, true);
-                }
-            }
-
             sleep(1);
-            $remaining = [];
-            if ($exe) {
-                $remaining = $this->findProcessIds($folder, $exe);
-            }
 
-            if (!empty($remaining) || $this->isAnyKnownProcessRunning($knownExecutables)) {
-                return [
-                    'success' => false,
-                    'message' => 'Não foi possível encerrar completamente o servidor. Existem processos remanescentes.',
-                    'output' => implode(' | ', $outputs)
-                ];
+            if ($engine === 'fivem') {
+                $remaining = $this->findFiveMMainProcess($folder, false); // false = strict mode for stop
+                if ($remaining) {
+                    return [
+                        'success' => false,
+                        'message' => 'Não foi possível encerrar completamente o servidor. Processo ainda em execução.',
+                        'output' => implode(' | ', $outputs)
+                    ];
+                }
+            } else {
+                $knownExecutables = $this->getKnownExecutables();
+                $remaining = [];
+                if ($exe) {
+                    $remaining = $this->findProcessIds($folder, $exe);
+                }
+
+                if (!empty($remaining) || $this->isAnyKnownProcessRunning($knownExecutables)) {
+                    return [
+                        'success' => false,
+                        'message' => 'Não foi possível encerrar completamente o servidor. Existem processos remanescentes.',
+                        'output' => implode(' | ', $outputs)
+                    ];
+                }
             }
 
             if (empty($pids) && empty($outputs)) {
@@ -594,6 +1015,12 @@ class LocalServerService
                 'success' => false,
                 'message' => $e->getMessage()
             ];
+        } finally {
+            // Limpar PID salvo quando servidor for parado
+            if ($server->pid) {
+                $server->update(['pid' => null]);
+                ActionLogService::append("FiveM PID cleared: server_id={$server->id}, previous_pid={$server->pid}");
+            }
         }
     }
 
@@ -607,6 +1034,48 @@ class LocalServerService
         }
         exec($cmd, $output);
         return $cmd;
+    }
+
+    protected function stopSingleFxServerByImageName(): string
+    {
+        $output = [];
+        if ($this->isWindows()) {
+            $cmd = 'taskkill /F /IM FXServer.exe /T';
+            exec($cmd, $output);
+            return implode(' | ', $output);
+        }
+
+        return '';
+    }
+
+    protected function findFxServerProcessIds(): array
+    {
+        if (!$this->isWindows()) {
+            return [];
+        }
+
+        $output = [];
+        exec('wmic process where "name=\'FXServer.exe\'" get ProcessId /FORMAT:CSV', $output);
+
+        $pids = [];
+        foreach ($output as $line) {
+            $line = trim($line);
+            if ($line === '' || stripos($line, 'ProcessId') !== false) {
+                continue;
+            }
+
+            $parts = str_getcsv($line);
+            if (count($parts) < 2) {
+                continue;
+            }
+
+            $pidStr = $parts[1] ?? '';
+            if (is_numeric($pidStr)) {
+                $pids[] = (int) $pidStr;
+            }
+        }
+
+        return array_values(array_unique($pids));
     }
 
     protected function killByImageName(string $exe, bool $withChildren = false): string
@@ -636,7 +1105,7 @@ class LocalServerService
         return $this->stop($server);
     }
 
-    protected function buildStartCommandByEngine(Server $server, string $rootPath, string $exe, ?string $configFile = null): string
+    protected function buildStartCommandByEngine(Server $server, string $rootPath, string $exe, ?string $configFile = null, ?string $runBatPath = null): string
     {
         $engine = strtolower($server->engine ?? 'samp');
         $executablePath = $rootPath . DIRECTORY_SEPARATOR . $exe;
@@ -653,34 +1122,294 @@ class LocalServerService
         }
 
         if ($this->isWindows()) {
+            if ($engine === 'fivem' && in_array(strtolower(basename($exe)), ['run.bat', 'run.cmd'], true)) {
+                $runBatPath = $runBatPath ?? $executablePath;
+                $psRunBat = str_replace("'", "''", $runBatPath);
+                $psRoot = str_replace("'", "''", $rootPath);
+
+                $psCommand = sprintf(
+                    "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c','\"%s\"' -WorkingDirectory '%s' -WindowStyle Normal",
+                    $psRunBat,
+                    $psRoot
+                );
+
+                $command = 'powershell -NoProfile -ExecutionPolicy Bypass -Command ' . escapeshellarg($psCommand);
+
+                if (str_contains($command, '$quotedRoot') || str_contains($command, '$quotedBat') || str_contains($command, '" . ')) {
+                    throw new \RuntimeException('Comando PowerShell FiveM inválido: concatenação PHP vazou para a string final.');
+                }
+
+                $this->writeFivemStartCommandDebug($command, $runBatPath, $rootPath);
+                return $command;
+            }
+
             $quotedFolder = '"' . str_replace('"', '\\"', $rootPath) . '"';
             $quotedExe = '"' . str_replace('"', '\\"', $executablePath) . '"';
-            if ($engine === 'fivem' && strtolower(basename($exe)) === 'run.bat') {
-                return 'cmd /c start "" /D ' . $quotedFolder . ' ' . $quotedExe;
-            }
             return 'start /B "" /D ' . $quotedFolder . ' ' . $quotedExe . $execParam;
         }
 
         $quotedFolder = escapeshellarg($rootPath);
         $quotedExe = escapeshellarg($executablePath);
-        $command = 'cd ' . $quotedFolder . ' && chmod +x ' . $quotedExe . ' >/dev/null 2>&1 && nohup ' . $quotedExe . $execParam . ' >/dev/null 2>&1 &';
-
-        return $command;
+        return 'cd ' . $quotedFolder . ' && chmod +x ' . $quotedExe . ' >/dev/null 2>&1 && nohup ' . $quotedExe . $execParam . ' >/dev/null 2>&1 &';
     }
 
-    protected function waitForServerStart(string $rootPath, string $exe, ?int $port, string $engine): bool
+    protected function writeFivemStartCommandDebug(string $command, string $runBatPath, string $rootPath): void
     {
-        for ($attempt = 0; $attempt < 6; $attempt++) {
-            sleep(1);
-            if (!empty($this->findProcessIds($rootPath, $exe))) {
+        $filePath = storage_path('logs/fivem-start-debug.ps1');
+        $content = "runBatPath={$runBatPath}\nworkingDirectory={$rootPath}\ncommand={$command}\nfile_exists=" . (file_exists($runBatPath) ? '1' : '0') . "\nis_readable=" . (is_readable($runBatPath) ? '1' : '0') . "\n";
+        @file_put_contents($filePath, $content);
+        ActionLogService::append("FiveM start debug file written: {$filePath}");
+    }
+
+    protected function waitForFiveMServerStart(string $rootPath, string $exe, ?int $port, bool $useRunBat = false, bool $hasStartOutput = false, ?Server $server = null, ?string &$debug = null, ?string &$errorMessage = null): bool
+    {
+        $initialDelayMs = 5000000; // 5s
+        $maxAttempts = 30; // 60 seconds de checagem após o delay inicial
+        $sleepMs = 2000000; // 2s
+
+        $debug = null;
+        $errorMessage = null;
+        $httpInfo = false;
+        $httpPlayers = false;
+        $portOpen = false;
+        $mainPid = null;
+        $onlineDetected = false;
+        $startTime = microtime(true);
+
+        ActionLogService::append("[FiveM] Waiting for server start: rootPath={$rootPath}, exe={$exe}, port={$port}, useRunBat=" . ($useRunBat ? '1' : '0') . ", hasStartOutput=" . ($hasStartOutput ? '1' : '0') . ", initialDelayMs={$initialDelayMs}, maxAttempts={$maxAttempts}, sleepMs={$sleepMs}");
+
+        usleep($initialDelayMs);
+
+        for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
+            $httpStatus = $this->getFivemHttpStatus($port);
+            $httpInfo = $httpStatus['infoJson'];
+            $httpPlayers = $httpStatus['playersJson'];
+            $portOpen = !empty($port) && $this->isPortInUse($port);
+            $mainPid = $this->findFiveMMainProcess($rootPath, true);
+
+            // Verificar se cmd.exe /c run.bat está rodando
+            $cmdProcessRunning = false;
+            if ($useRunBat) {
+                $cmdProcessRunning = $this->isCmdRunBatProcessRunning($runBatPath ?? ($rootPath . DIRECTORY_SEPARATOR . $exe));
+            }
+
+            if ($mainPid) {
+                ActionLogService::append("[FiveM] SUCCESS: Main process detected at attempt {$attempt}, PID={$mainPid}");
+                if ($server) {
+                    $server->update(['pid' => $mainPid]);
+                    ActionLogService::append("[FiveM] PID saved: server_id={$server->id}, pid={$mainPid}");
+                }
                 return true;
             }
 
-            if (!empty($port) && $this->isPortInUse((int) $port)) {
+            if ($httpInfo || $httpPlayers) {
+                $onlineDetected = true;
+                ActionLogService::append("[FiveM] ONLINE INDICATOR: attempt {$attempt}, infoJson=" . ($httpInfo ? '1' : '0') . ", playersJson=" . ($httpPlayers ? '1' : '0') . ", portOpen=" . ($portOpen ? '1' : '0') . ", pidPending=1");
+            } elseif ($portOpen) {
+                ActionLogService::append("[FiveM] Attempt {$attempt}: porta aberta mas nenhum endpoint HTTP responsivo, aguardando FXServer.exe...");
+            } else {
+                ActionLogService::append("[FiveM] Attempt {$attempt}: server ainda não online, aguardando... cmdRunning=" . ($cmdProcessRunning ? '1' : '0'));
+            }
+
+            if ($useRunBat && (microtime(true) - $startTime) >= 30 && !$mainPid && !$httpInfo && !$httpPlayers && !$cmdProcessRunning) {
+                $errorMessage = 'run.bat foi chamado, mas cmd.exe /c run.bat não iniciou ou já terminou';
+                $debug = $this->buildFiveMStartDebug($port, $portOpen, $httpInfo, $httpPlayers, false);
+                ActionLogService::append("[FiveM] FAILED: {$errorMessage} | {$debug}");
+                return false;
+            }
+
+            usleep($sleepMs);
+        }
+
+        $portOpen = !empty($port) && $this->isPortInUse($port);
+        $mainPid = $this->findFiveMMainProcess($rootPath, true);
+        $httpStatus = $this->getFivemHttpStatus($port);
+        $httpInfo = $httpStatus['infoJson'];
+        $httpPlayers = $httpStatus['playersJson'];
+
+        if ($mainPid) {
+            ActionLogService::append("[FiveM] SUCCESS: Main process detected after timeout, PID={$mainPid}");
+            if ($server) {
+                $server->update(['pid' => $mainPid]);
+                ActionLogService::append("[FiveM] PID saved: server_id={$server->id}, pid={$mainPid}");
+            }
+            return true;
+        }
+
+        if ($httpInfo || $httpPlayers) {
+            ActionLogService::append("[FiveM] SUCCESS: server considerado online após timeout por HTTP, sem PID disponível.");
+            return true;
+        }
+
+        $debug = $this->buildFiveMStartDebug($port, $portOpen, $httpInfo, $httpPlayers, (bool) $mainPid);
+        if ($useRunBat) {
+            $errorMessage = 'run.bat foi chamado, mas FXServer.exe não iniciou';
+        }
+        ActionLogService::append("[FiveM] FAILED: " . $debug);
+        return false;
+    }
+
+    protected function isCmdRunBatProcessRunning(string $runBatPath): bool
+    {
+        if (!$this->isWindows()) {
+            return false;
+        }
+
+        $runBatName = basename($runBatPath);
+        $command = 'wmic process where "name=\'cmd.exe\' and commandline like \'%cmd.exe /c \\\\"' . str_replace('\\', '\\\\', $runBatName) . '\\"%\'" get processid /value 2>nul';
+
+        $output = shell_exec($command);
+        if (!$output) {
+            return false;
+        }
+
+        $lines = explode("\n", trim($output));
+        foreach ($lines as $line) {
+            if (preg_match('/ProcessId=(\d+)/', $line, $matches)) {
+                ActionLogService::append("Found cmd.exe /c {$runBatName} process: PID={$matches[1]}");
                 return true;
             }
         }
 
+        return false;
+    }
+
+    protected function getFivemHttpStatus(?int $port): array
+    {
+        $status = [
+            'infoJson' => false,
+            'playersJson' => false,
+        ];
+
+        if (empty($port)) {
+            return $status;
+        }
+
+        $baseUrl = 'http://127.0.0.1:' . $port;
+        $endpoints = [
+            'infoJson' => $baseUrl . '/info.json',
+            'playersJson' => $baseUrl . '/players.json',
+        ];
+
+        foreach ($endpoints as $key => $url) {
+            if ($this->checkFivemHttpUrl($url)) {
+                $status[$key] = true;
+            }
+        }
+
+        return $status;
+    }
+
+    protected function checkFivemHttpUrl(string $url): bool
+    {
+        $ch = curl_init();
+        curl_setopt_array($ch, [
+            CURLOPT_URL => $url,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT_MS => 1000,
+            CURLOPT_TIMEOUT_MS => 2000,
+            CURLOPT_HTTPHEADER => [
+                'User-Agent: painel-samp/1.0'
+            ],
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+        ]);
+
+        curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $error = curl_error($ch);
+        curl_close($ch);
+
+        return $httpCode === 200 && empty($error);
+    }
+
+    protected function buildFiveMStartDebug(?int $port, bool $portOpen, bool $infoOk, bool $playersOk, bool $processFound): string
+    {
+        return sprintf(
+            'port=%s status=%s infoJson=%s playersJson=%s FXServerProcess=%s',
+            $port !== null ? $port : 'n/a',
+            $portOpen ? 'open' : 'closed',
+            $infoOk ? 'ok' : 'failed',
+            $playersOk ? 'ok' : 'failed',
+            $processFound ? 'found' : 'not_found'
+        );
+    }
+
+    protected function isFivemServer(Server $server): bool
+    {
+        return strtolower($server->engine ?? 'samp') === 'fivem';
+    }
+
+    protected function waitForServerStart(Server $server, bool $hasStartOutput = false, ?string &$debug = null, ?string &$errorMessage = null): bool
+    {
+        if ($this->isFivemServer($server)) {
+            return $this->waitForFiveMStart($server, $hasStartOutput, $debug, $errorMessage);
+        }
+
+        return $this->waitForSampStart($server);
+    }
+
+    protected function waitForFiveMStart(Server $server, bool $hasStartOutput = false, ?string &$debug = null, ?string &$errorMessage = null): bool
+    {
+        $rootPath = $this->resolveFolder($server->folder);
+        if (!$rootPath || !is_dir($rootPath)) {
+            return false;
+        }
+
+        $runBatPath = $this->locateRunBatForFiveM($rootPath);
+        if ($runBatPath) {
+            $exe = basename($runBatPath);
+            $useRunBat = true;
+        } else {
+            $exe = $this->resolveFiveMExecutable($rootPath);
+            $useRunBat = $exe && strtolower(basename($exe)) === 'run.bat';
+        }
+
+        if (!$exe) {
+            return false;
+        }
+
+        return $this->waitForFiveMServerStart($rootPath, $exe, !empty($server->port) ? (int) $server->port : null, $useRunBat, $hasStartOutput, $server, $debug, $errorMessage);
+    }
+
+    protected function waitForSampStart(Server $server): bool
+    {
+        $rootPath = $this->resolveFolder($server->folder);
+        if (!$rootPath || !is_dir($rootPath)) {
+            return false;
+        }
+
+        $exe = $this->resolveSampExecutable($rootPath);
+        if (!$exe) {
+            return false;
+        }
+
+        $port = !empty($server->port) ? (int) $server->port : null;
+        $maxAttempts = 60; // 30 segundos para SA-MP
+        $sleepMs = 500000; // 500ms
+
+        ActionLogService::append("[SA-MP] Waiting for server start: rootPath={$rootPath}, exe={$exe}, port={$port}, maxAttempts={$maxAttempts}");
+
+        for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
+            usleep($sleepMs);
+
+            if (!empty($port) && $this->isPortInUse($port)) {
+                ActionLogService::append("[SA-MP] SUCCESS: Port {$port} is OPEN at attempt {$attempt} - server started");
+                return true;
+            }
+
+            if (!empty($this->findProcessIds($rootPath, $exe))) {
+                ActionLogService::append("[SA-MP] SUCCESS: Process {$exe} detected at attempt {$attempt}");
+                return true;
+            }
+        }
+
+        if (!empty($port) && $this->isPortInUse($port)) {
+            ActionLogService::append("[SA-MP] SUCCESS: Port {$port} is OPEN after timeout - server started");
+            return true;
+        }
+
+        ActionLogService::append("[SA-MP] FAILED: no process or port detected after {$maxAttempts} attempts");
         return false;
     }
 
@@ -813,9 +1542,9 @@ class LocalServerService
 
     protected function resolveFiveMExecutable(string $folder): ?string
     {
-        // FiveM candidates em ordem de prioridade
         $candidates = [
-            'run.bat', // Prioridade para wrapper personalizado
+            'run.bat',
+            'run.cmd',
             'artifacts' . DIRECTORY_SEPARATOR . 'FXServer.exe',
             'artifacts' . DIRECTORY_SEPARATOR . 'server' . DIRECTORY_SEPARATOR . 'FXServer.exe',
             'FXServer.exe',
@@ -904,18 +1633,75 @@ class LocalServerService
             exec('netstat -ano | findstr ":' . $port . '"', $output);
         }
 
+        $portInUse = false;
         foreach ($output as $line) {
             if ($this->isLinux()) {
                 if (preg_match('/:' . $port . '\b/', $line)) {
-                    return true;
+                    $portInUse = true;
+                    break;
                 }
             } else {
                 if (preg_match('/^\s*TCP/i', $line) || preg_match('/^\s*UDP/i', $line)) {
-                    return true;
+                    $portInUse = true;
+                    break;
                 }
             }
         }
 
-        return false;
+        ActionLogService::append("Port {$port} check: " . ($portInUse ? 'IN USE' : 'FREE') . " (found " . count($output) . " lines)");
+        if (!empty($output)) {
+            ActionLogService::append("Port {$port} details: " . implode(' | ', array_slice($output, 0, 3))); // Log first 3 lines
+        }
+
+        return $portInUse;
+    }
+
+    public function isServerPortInUse(int $port): bool
+    {
+        return $this->isPortInUse($port);
+    }
+
+    protected function getFolderSize(string $folder): ?int
+    {
+        if (!$this->isWindows()) {
+            // Linux/Mac: usar du
+            $output = [];
+            $cmd = 'du -sb "' . str_replace('"', '\\"', $folder) . '" 2>/dev/null';
+            exec($cmd, $output);
+            if (!empty($output) && preg_match('/^(\d+)/', $output[0], $matches)) {
+                return (int) $matches[1];
+            }
+            return null;
+        }
+
+        // Windows: usar PowerShell para calcular tamanho da pasta
+        $output = [];
+        $escapedFolder = str_replace("'", "''", $folder);
+        $cmd = "powershell -NoProfile -Command \"(Get-ChildItem -Path '$escapedFolder' -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum\"";
+        exec($cmd, $output);
+
+        if (!empty($output) && is_numeric(trim($output[0]))) {
+            return (int) trim($output[0]);
+        }
+
+        return null;
+    }
+
+    protected function isProcessRunningByPid(int $pid): bool
+    {
+        if ($this->isWindows()) {
+            $output = [];
+            exec('tasklist /FI "PID eq ' . $pid . '" /NH', $output);
+            foreach ($output as $line) {
+                if (stripos($line, (string) $pid) !== false) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        $output = [];
+        exec('ps -p ' . $pid . ' -o pid= 2>/dev/null', $output);
+        return !empty($output) && trim($output[0]) == $pid;
     }
 }

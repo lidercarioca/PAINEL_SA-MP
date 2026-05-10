@@ -1950,24 +1950,38 @@ body,
 .console-live-badge {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 12px;
-  background: rgba(34, 197, 94, 0.15);
-  color: #86efac;
-  font-size: 0.75rem;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.5px;
-  border: 1px solid rgba(34, 197, 94, 0.3);
-  animation: pulse-glow 2s infinite;
+  letter-spacing: 0.75px;
+  border: 1px solid transparent;
+}
+
+.console-live-badge.live {
+  background: rgba(52, 211, 153, 0.12);
+  color: #a7f3d0;
+  border-color: rgba(52, 211, 153, 0.25);
+}
+
+.console-live-badge.offline {
+  background: rgba(248, 113, 113, 0.14);
+  color: #fecaca;
+  border-color: rgba(248, 113, 113, 0.28);
 }
 
 .live-dot {
-  inline-size: 6px;
-  block-size: 6px;
+  inline-size: 8px;
+  block-size: 8px;
   border-radius: 50%;
   background: #22c55e;
-  animation: pulse-glow 2s infinite;
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
+}
+
+.console-live-badge.offline .live-dot {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.12);
 }
 
 .console-header-actions {
@@ -2010,14 +2024,15 @@ body,
 
 .console-body {
   flex: 1;
-  background: #020617;
+  background: #060b16;
   border-radius: 0 0 var(--radius) var(--radius);
   overflow-y: auto;
-  padding: 12px 16px;
+  padding: 16px 18px;
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
-  font-size: 0.8rem;
-  line-height: 1.4;
+  font-size: 0.82rem;
+  line-height: 1.45;
   position: relative;
+  color: #d1d5db;
 }
 
 .console-page {
@@ -2230,12 +2245,12 @@ body,
 .console-line {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 2px 0;
-  transition: all var(--transition-smooth);
-  border-radius: 4px;
-  padding: 2px 4px;
-  margin: 1px 0;
+  gap: 10px;
+  padding: 6px 10px;
+  transition: background-color var(--transition-smooth);
+  border-radius: 8px;
+  margin: 4px 0;
+  background: rgba(255, 255, 255, 0.015);
 }
 
 .console-line:hover {
@@ -2258,25 +2273,30 @@ body,
 }
 
 /* Log levels */
-.console-info .console-content {
-  color: #22c55e;
+.console-resource .console-content {
+  color: #7c3aed;
 }
 
 .console-warning .console-content {
-  color: #f59e0b;
+  color: #fbbf24;
 }
 
 .console-error .console-content {
-  color: #ef4444;
-  font-weight: 600;
+  color: #f87171;
+  font-weight: 700;
+}
+
+.console-info .console-content {
+  color: #93c5fd;
 }
 
 .console-debug .console-content {
-  color: #a855f7;
+  color: #94a3b8;
+  opacity: 0.8;
 }
 
 .console-default .console-content {
-  color: #94a3b8;
+  color: #cbd5e1;
 }
 
 .console-empty {
@@ -2346,16 +2366,16 @@ body,
    ========================================================= */
 
 .server-console[data-engine="fivem"] .console-header {
-  background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(168, 85, 247, 0.1));
-  border-color: rgba(168, 85, 247, 0.3);
+  background: linear-gradient(135deg, rgba(8, 12, 24, 0.95), rgba(6, 9, 19, 0.95));
+  border-color: rgba(99, 102, 241, 0.2);
 }
 
 .server-console[data-engine="fivem"] .console-body {
-  background: #0f0a1a;
+  background: #05070f;
 }
 
 .server-console[data-engine="fivem"] .console-body.console-fivem {
-  background: linear-gradient(135deg, rgba(20, 10, 35, 0.98), rgba(15, 8, 30, 0.98));
+  background: linear-gradient(180deg, #04050c 0%, #060b16 100%);
 }
 
 .server-console[data-engine="fivem"] .console-line {
@@ -2363,74 +2383,62 @@ body,
 }
 
 /* FiveM Color Scheme */
-.server-console[data-engine="fivem"] .console-error .console-content {
-  color: #ff4545;
-  text-shadow: 0 0 8px rgba(255, 69, 69, 0.3);
+.server-console[data-engine="fivem"] .console-resource .console-content,
+.server-console[data-engine="fivem"] .fivem-resource .console-content {
+  color: #7c3aed;
 }
 
-.server-console[data-engine="fivem"] .fivem-error .console-content {
-  color: #ff4545;
-  text-shadow: 0 0 8px rgba(255, 69, 69, 0.3);
-  font-weight: 600;
-}
-
-.server-console[data-engine="fivem"] .console-warning .console-content {
-  color: #ffd700;
-  text-shadow: 0 0 8px rgba(255, 215, 0, 0.3);
-}
-
+.server-console[data-engine="fivem"] .console-warning .console-content,
 .server-console[data-engine="fivem"] .fivem-warning .console-content {
-  color: #ffd700;
-  text-shadow: 0 0 8px rgba(255, 215, 0, 0.3);
+  color: #fb923c;
 }
 
-.server-console[data-engine="fivem"] .console-info .console-content {
-  color: #00ff00;
-  text-shadow: 0 0 8px rgba(0, 255, 0, 0.3);
+.server-console[data-engine="fivem"] .console-error .console-content,
+.server-console[data-engine="fivem"] .fivem-error .console-content {
+  color: #f87171;
+  font-weight: 700;
 }
 
+.server-console[data-engine="fivem"] .console-info .console-content,
 .server-console[data-engine="fivem"] .fivem-info .console-content {
-  color: #00ff00;
-  text-shadow: 0 0 8px rgba(0, 255, 0, 0.3);
+  color: #7dd3fc;
 }
 
-.server-console[data-engine="fivem"] .console-debug .console-content {
-  color: #0088ff;
-  text-shadow: 0 0 8px rgba(0, 136, 255, 0.3);
-}
-
+.server-console[data-engine="fivem"] .console-debug .console-content,
 .server-console[data-engine="fivem"] .fivem-debug .console-content {
-  color: #0088ff;
-  text-shadow: 0 0 8px rgba(0, 136, 255, 0.3);
+  color: #94a3b8;
+  opacity: 0.82;
 }
 
-.server-console[data-engine="fivem"] .console-default .console-content {
-  color: #cccccc;
+.server-console[data-engine="fivem"] .console-default .console-content,
+.server-console[data-engine="fivem"] .fivem-default .console-content {
+  color: #cbd5e1;
 }
 
 /* FiveM Badge Styling */
 .server-console[data-engine="fivem"] .fivem-badge {
-  background: rgba(168, 85, 247, 0.15);
-  border-color: rgba(168, 85, 247, 0.3);
-  color: #e9d5ff;
+  background: rgba(59, 130, 246, 0.12);
+  border-color: rgba(59, 130, 246, 0.2);
+  color: #bfdbfe;
 }
 
 .server-console[data-engine="fivem"] .fivem-badge .live-dot {
-  background: #a855f7;
+  background: #60a5fa;
+  box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.12);
 }
 
 /* FiveM Scrollbar */
 .server-console[data-engine="fivem"] .console-body::-webkit-scrollbar-thumb {
-  background: rgba(168, 85, 247, 0.35);
+  background: rgba(148, 163, 184, 0.24);
 }
 
 .server-console[data-engine="fivem"] .console-body::-webkit-scrollbar-thumb:hover {
-  background: rgba(168, 85, 247, 0.6);
+  background: rgba(148, 163, 184, 0.4);
 }
 
 /* FiveM Console Border */
 .server-console[data-engine="fivem"] .console-body::before {
-  background: linear-gradient(135deg, rgba(168, 85, 247, 0.15), rgba(147, 51, 234, 0.15));
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(168, 85, 247, 0.1));
 }
 
 /* =========================================================

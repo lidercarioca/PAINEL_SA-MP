@@ -44,6 +44,8 @@ Route::middleware('api.token')->group(function () {
     Route::get('/resources', [ResourceController::class, 'index']);
     Route::get('/servers/{serverId}/players', [ServerController::class, 'players']);
     Route::get('/servers/{serverId}/stats', [ServerController::class, 'stats']);
+    Route::get('/servers/{serverId}/status', [ServerController::class, 'status']);
+    Route::get('/servers/{serverId}/console-stream', [LogController::class, 'stream']);
     Route::get('/logs', [LogController::class, 'index']);
     Route::get('/files', [FileController::class, 'index']);
     Route::post('/files/upload', [FileController::class, 'upload']);

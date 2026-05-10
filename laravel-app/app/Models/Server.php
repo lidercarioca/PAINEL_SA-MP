@@ -24,6 +24,7 @@ class Server extends Model
         'limit_ram',
         'limit_slots',
         'disk_limit_gb',
+        'pid',
         'auto_restart_interval_hours',
         'auto_restart_on_crash',
         'auto_restart_on_offline',

@@ -8,8 +8,10 @@ import {
   suspendServer,
   sendRconCommand,
   fetchLogs,
+  fetchServerConsoleStream,
   fetchPlayers,
   fetchServerStats,
+  refreshServerStatus,
   createServer,
   updateServer,
   deleteServer,
@@ -33,7 +35,9 @@ const getStatusLabel = (status, ping = null) => {
     case 'offline':
       return '🔴 Offline';
     case 'starting':
-      return '🟡 Iniciando';
+      return '🟡 Iniciando...';
+    case 'stopping':
+      return '🟡 Parando...';
     case 'suspended':
       return '🔴 Offline';
     default:
@@ -95,8 +99,12 @@ const Dashboard = () => {
   const [actionLoading, setActionLoading] = useState({ serverId: null, action: null });
   const serverLogRef = useRef(null);
   const serverLogLinesRef = useRef([]);
+  const serverLogOffsetRef = useRef(0);
+  const serverLogFileRef = useRef(null);
   const firstLogLoadRef = useRef(true);
   const editSectionRef = useRef(null);
+  const quickPollIntervalRef = useRef(null);
+  const quickPollTimeoutRef = useRef(null);
   const navigate = useNavigate();
 
   // Wrapper para setActiveServer que persiste no localStorage
@@ -206,6 +214,14 @@ const Dashboard = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Limpar polling rápido quando componente desmontar
+  useEffect(() => {
+    return () => {
+      if (quickPollIntervalRef.current) clearInterval(quickPollIntervalRef.current);
+      if (quickPollTimeoutRef.current) clearTimeout(quickPollTimeoutRef.current);
+    };
+  }, []);
+
   const loadResources = async () => {
     try {
       const { data } = await getResources();
@@ -241,12 +257,9 @@ const Dashboard = () => {
         // Em Electron/Tauri, isso fornece o caminho real
         // Em navegadores, temos acesso limitado mas podemos armazenar a referência
         const folderPath = dirHandle.name;
-        
-        console.log('Pasta selecionada (API File System):', folderPath);
         setNewServer((prev) => ({ ...prev, folder: folderPath }));
         return;
       } catch (error) {
-        console.log('Erro ou cancelado na API File System:', error);
         // Fallback para o método tradicional
       }
     }
@@ -281,7 +294,6 @@ const Dashboard = () => {
       selectedFolder = file.name;
     }
 
-    console.log('Caminho final:', selectedFolder);
     setNewServer((prev) => ({ ...prev, folder: selectedFolder }));
   };
 
@@ -366,15 +378,147 @@ const Dashboard = () => {
     }
   };
 
+  // Polling rápido para detectar mudanças de status
+  const startQuickPolling = (serverId, durationMs = 10000, initialDelayMs = 5000, intervalMs = 2000) => {
+    if (quickPollIntervalRef.current) clearInterval(quickPollIntervalRef.current);
+    if (quickPollTimeoutRef.current) clearTimeout(quickPollTimeoutRef.current);
+
+    let elapsed = 0;
+    let pollingActive = true;
+
+    const stopPolling = () => {
+      if (quickPollIntervalRef.current) {
+        clearInterval(quickPollIntervalRef.current);
+        quickPollIntervalRef.current = null;
+      }
+      if (quickPollTimeoutRef.current) {
+        clearTimeout(quickPollTimeoutRef.current);
+        quickPollTimeoutRef.current = null;
+      }
+      pollingActive = false;
+    };
+
+    const pollFunction = async () => {
+      if (!pollingActive) return;
+
+      try {
+        const { data } = await refreshServerStatus(serverId);
+
+        if (activeServer && Number(activeServer.id) === Number(serverId)) {
+          const updatedServer = {
+            ...activeServer,
+            status: data.status,
+            ping: data.ping,
+          };
+          setActiveServer(updatedServer);
+        }
+
+        setServers(prev => prev.map(s =>
+          Number(s.id) === Number(serverId)
+            ? { ...s, status: data.status, ping: data.ping }
+            : s
+        ));
+
+        if (data.cpu !== undefined) setServerCpu(data.cpu);
+        if (data.memory !== undefined) setServerMemory(data.memory);
+        if (data.disk !== undefined) setServerDisk(data.disk);
+
+        if (data.status === 'online') {
+          stopPolling();
+          return;
+        }
+
+        if (elapsed >= durationMs && data.status === 'offline') {
+          if (activeServer && Number(activeServer.id) === Number(serverId)) {
+            setActiveServer({
+              ...activeServer,
+              status: 'offline',
+              ping: null,
+            });
+          }
+          setServers(prev => prev.map(s =>
+            Number(s.id) === Number(serverId)
+              ? { ...s, status: 'offline', ping: null }
+              : s
+          ));
+          stopPolling();
+        }
+      } catch (error) {
+        if (error.response?.status >= 500) {
+          stopPolling();
+          setMessage('Falha ao verificar status do servidor. Tente novamente mais tarde.');
+          return;
+        }
+      }
+    };
+
+    quickPollTimeoutRef.current = setTimeout(() => {
+      if (!pollingActive) return;
+      pollFunction();
+      quickPollIntervalRef.current = setInterval(() => {
+        elapsed += intervalMs;
+        pollFunction();
+      }, intervalMs);
+    }, initialDelayMs);
+
+    setTimeout(() => {
+      if (pollingActive) stopPolling();
+    }, durationMs + initialDelayMs);
+  };
+
   const handleAction = async (serverId, action) => {
     setActionLoading({ serverId, action });
     try {
-      if (action === 'start') await startServer(serverId);
-      if (action === 'stop') await stopServer(serverId);
-      if (action === 'restart') await restartServer(serverId);
-      if (action === 'suspend') await suspendServer(serverId);
-      setMessage(`Comando ${action} enviado.`);
-      await loadServers();
+      if (action === 'start') {
+        const { data } = await startServer(serverId);
+        if (data?.success) {
+          setMessage(data.message || 'Servidor iniciado com sucesso.');
+          if (activeServer && Number(activeServer.id) === Number(serverId)) {
+            setActiveServer({ ...activeServer, status: 'starting', ping: null });
+            setServers(prev => prev.map(s =>
+              Number(s.id) === Number(serverId)
+                ? { ...s, status: 'starting', ping: null }
+                : s
+            ));
+          }
+          startQuickPolling(serverId, 45000, 5000, 2000);
+          await loadServers();
+        } else {
+          throw new Error(data?.message || 'Falha ao iniciar o servidor.');
+        }
+      }
+      if (action === 'stop') {
+        const { data } = await stopServer(serverId);
+        setMessage(data?.message || 'Comando stop enviado.');
+        if (activeServer && Number(activeServer.id) === Number(serverId)) {
+          setActiveServer({ ...activeServer, status: 'stopping' });
+          setServers(prev => prev.map(s =>
+            Number(s.id) === Number(serverId)
+              ? { ...s, status: 'stopping' }
+              : s
+          ));
+        }
+        startQuickPolling(serverId, 10000, 1000, 2000);
+        await loadServers();
+      }
+      if (action === 'restart') {
+        await restartServer(serverId);
+        setMessage('Comando restart enviado.');
+        // Iniciar polling rápido por 30 segundos
+        startQuickPolling(serverId, 30000);
+        await loadServers();
+      }
+      if (action === 'suspend') {
+        await suspendServer(serverId);
+        setMessage('Comando suspend enviado.');
+        // Atualizar estado local imediatamente
+        if (activeServer && Number(activeServer.id) === Number(serverId)) {
+          setActiveServer({ ...activeServer, status: 'offline' });
+        }
+        // Iniciar polling rápido por 5 segundos
+        startQuickPolling(serverId, 5000);
+        await loadServers();
+      }
     } catch (error) {
       const message = getApiErrorMessage(error);
       if (error.response?.status === 401) {
@@ -572,6 +716,8 @@ const Dashboard = () => {
         setServerLogError('Nenhum servidor selecionado para exibir o log.');
         setServerLogLines([]);
         serverLogLinesRef.current = [];
+        serverLogOffsetRef.current = 0;
+        serverLogFileRef.current = null;
         setServerLogLoading(false);
         return;
       }
@@ -581,36 +727,72 @@ const Dashboard = () => {
       }
 
       try {
-        const { data } = await fetchLogs(serverId);
-        const incomingLines = data.lines || [];
-        const previousLines = serverLogLinesRef.current;
-        let nextLines = incomingLines;
+        const isFiveM = activeServerIsFiveM;
 
-        if (previousLines.length > 0 && incomingLines.length >= previousLines.length) {
-          const hasSamePrefix = previousLines.every((line, index) => line === incomingLines[index]);
-          if (hasSamePrefix) {
-            nextLines = [...previousLines, ...incomingLines.slice(previousLines.length)];
-          }
+        let response;
+        if (isFiveM) {
+          response = await fetchServerConsoleStream(serverId, serverLogOffsetRef.current);
+        } else {
+          response = await fetchLogs(serverId);
         }
 
-        setServerLogLines(nextLines);
-        serverLogLinesRef.current = nextLines;
-        setServerLogError('');
+        const data = response.data || {};
+
+        if (isFiveM) {
+          if (!data.success) {
+            setServerLogError(data.message || 'Não foi possível carregar o console do FXServer.');
+            setServerLogLines([]);
+            serverLogLinesRef.current = [];
+            return;
+          }
+
+          const incomingLines = Array.isArray(data.lines) ? data.lines : [];
+          const nextOffset = Number(data.offset || 0);
+          const nextFile = data.file || null;
+          const shouldReset = data.truncated || (serverLogFileRef.current && nextFile !== serverLogFileRef.current);
+
+          const nextLines = shouldReset
+            ? incomingLines
+            : [...serverLogLinesRef.current, ...incomingLines].slice(-300);
+
+          serverLogOffsetRef.current = nextOffset;
+          serverLogFileRef.current = nextFile;
+          setServerLogLines(nextLines);
+          serverLogLinesRef.current = nextLines;
+          setServerLogError('');
+        } else {
+          const incomingLines = Array.isArray(data.lines) ? data.lines : [];
+          setServerLogLines(incomingLines);
+          serverLogLinesRef.current = incomingLines;
+          serverLogOffsetRef.current = 0;
+          serverLogFileRef.current = null;
+          setServerLogError('');
+        }
       } catch (error) {
         const message = getApiErrorMessage(error);
+        console.error('[Dashboard] error loading logs:', message, error);
         setServerLogError(message || 'Não foi possível carregar o console do servidor.');
         setServerLogLines([]);
         serverLogLinesRef.current = [];
+        serverLogOffsetRef.current = 0;
+        serverLogFileRef.current = null;
       } finally {
         setServerLogLoading(false);
         firstLogLoadRef.current = false;
       }
     };
 
+    serverLogOffsetRef.current = 0;
+    serverLogFileRef.current = null;
+    serverLogLinesRef.current = [];
+    firstLogLoadRef.current = true;
+    setServerLogLines([]);
+    setServerLogError('');
+
     loadServerLogs(activeServer.id);
-    const logInterval = setInterval(() => loadServerLogs(activeServer.id), 5000);
+    const logInterval = setInterval(() => loadServerLogs(activeServer.id), 1500);
     return () => clearInterval(logInterval);
-  }, [activeServer, plans]);
+  }, [activeServer, activeServerEngine, plans]);
 
   useEffect(() => {
     if (activeServer) {
@@ -1014,9 +1196,14 @@ const Dashboard = () => {
                   <LoadingButton
                     loading={isActionLoading(activeServer.id, 'start')}
                     onClick={() => handleAction(activeServer.id, 'start')}
+                    disabled={serverStatus === 'starting'}
                     className="action-button quick-action-btn btn-start"
                   >
-                    {activeServerIsFiveM ? 'Iniciar FXServer' : 'Iniciar'}
+                    {serverStatus === 'starting'
+                      ? 'Iniciando...'
+                      : activeServerIsFiveM
+                        ? 'Iniciar FXServer'
+                        : 'Iniciar'}
                   </LoadingButton>
                 )}
                 <LoadingButton

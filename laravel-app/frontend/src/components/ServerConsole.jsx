@@ -10,15 +10,15 @@ const ServerConsole = ({
   const [autoScroll, setAutoScroll] = useState(true);
   const [localLogs, setLocalLogs] = useState([]);
   const consoleRef = useRef(null);
-  const lastLogCountRef = useRef(0);
   const engineType = activeServer?.engine || 'samp';
+  const serverStatus = String(activeServer?.status || '').toLowerCase();
+  const isServerOnline = serverStatus === 'online';
+  const badgeText = isServerOnline ? 'LIVE' : 'OFFLINE';
+  const badgeStatus = isServerOnline ? 'live' : 'offline';
 
   // Sincronizar logs locais com logs do servidor
   useEffect(() => {
-    if (serverLogLines.length > lastLogCountRef.current) {
-      setLocalLogs(serverLogLines);
-      lastLogCountRef.current = serverLogLines.length;
-    }
+    setLocalLogs(serverLogLines || []);
   }, [serverLogLines]);
 
   // Auto-scroll para o final quando novos logs chegam
@@ -34,17 +34,23 @@ const ServerConsole = ({
     const timestamp = timestampMatch ? timestampMatch[0] : '';
     const content = timestampMatch ? line.slice(timestamp.length).trim() : line;
 
-    // Para FiveM, detectar cores especiais
+    // Para FiveM, detectar cores especiais e tipos de evento
     if (engineType === 'fivem') {
-      // Cores específicas do FiveM
-      const level = content.includes('^1') || content.includes('ERROR') || content.includes('FAIL') || content.includes('error')
-        ? 'error' // Vermelho
-        : content.includes('^3') || content.includes('WARNING') || content.includes('WARN') || content.includes('warn')
-        ? 'warning' // Amarelo
-        : content.includes('^2') || content.includes('SUCCESS') || content.includes('INFO') || content.includes('info')
-        ? 'info' // Verde
-        : content.includes('^4') || content.includes('DEBUG') || content.includes('debug')
-        ? 'debug' // Azul
+      const normalized = content.toUpperCase();
+      const isResource = /RESOURCE|STARTED RESOURCE|STARTING RESOURCE|STOPPED RESOURCE|LOADED RESOURCE|FAILED TO LOAD/i.test(content);
+      const isPlayer = /PLAYER|CONNECT|DISCONNECT|JOINED|LEFT/i.test(content);
+      const isCommand = /COMMAND|EXECUTED|REGISTERED|TXADMIN/i.test(content);
+
+      const level = isResource
+        ? 'resource'
+        : normalized.includes('ERROR') || normalized.includes('FAIL') || normalized.includes('FATAL')
+        ? 'error'
+        : normalized.includes('WARNING') || normalized.includes('WARN')
+        ? 'warning'
+        : normalized.includes('DEBUG')
+        ? 'debug'
+        : normalized.includes('INFO') || isPlayer || isCommand
+        ? 'info'
         : 'default';
 
       return { timestamp, content, level, isFiveM: true };
@@ -87,7 +93,7 @@ const ServerConsole = ({
     setAutoScroll(!autoScroll);
   };
 
-  const displayedLogs = localLogs.slice(-24);
+  const displayedLogs = localLogs.slice(-200);
 
   return (
     <div className="server-console" data-engine={engineType}>
@@ -97,9 +103,9 @@ const ServerConsole = ({
             {engineType === 'fivem' ? 'FXServer Terminal' : 'Console Terminal'}
           </h3>
           {activeServer && (
-            <span className={`console-live-badge ${engineType === 'fivem' ? 'fivem-badge' : ''}`}>
+            <span className={`console-live-badge ${engineType === 'fivem' ? 'fivem-badge' : ''} ${badgeStatus}`}>
               <span className="live-dot"></span>
-              LIVE
+              {badgeText}
             </span>
           )}
         </div>

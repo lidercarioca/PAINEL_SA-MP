@@ -33,8 +33,11 @@ export const sendServerCommand = (serverId, command, mode = 'local', sshUser = '
 export const sendRconCommand = (serverId, command) => api.post('/rcon/send', { server_id: serverId, command });
 export const fetchLogs = (serverId, file = 'server_log.txt') =>
   api.get('/logs', { params: { server_id: serverId, file } });
+export const fetchServerConsoleStream = (serverId, offset = 0) =>
+  api.get(`/servers/${serverId}/console-stream`, { params: { offset } });
 export const fetchPlayers = (serverId) => api.get(`/servers/${serverId}/players`);
 export const fetchServerStats = (serverId) => api.get(`/servers/${serverId}/stats`);
+export const refreshServerStatus = (serverId) => api.get(`/servers/${serverId}/status`);
 export const updateServer = (data) => api.post('/servers/update', data);
 export const getFiles = (serverId, path = '') =>
   api.get('/files', { params: { server_id: serverId, path } });

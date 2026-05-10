@@ -9,6 +9,7 @@ use App\Services\LocalServerService;
 use App\Services\RemoteCommandService;
 use App\Services\SampRconService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\JsonResponse;
 
 class ServerController extends Controller
@@ -113,7 +114,19 @@ class ServerController extends Controller
             $status = $server->status;
 
             if ($server->type === 'local' && $server->status !== 'suspended') {
-                $status = $localServerService->isRunning($server) ? 'online' : 'offline';
+                $isCurrentlyRunning = $localServerService->isRunning($server);
+
+                // Para FiveM: se status salvo é online E porta está aberta, manter online
+                if (!$isCurrentlyRunning && $server->status === 'online' && strtolower($server->engine ?? 'samp') === 'fivem') {
+                    if (!empty($server->port) && $localServerService->isServerPortInUse((int) $server->port)) {
+                        ActionLogService::append("[FiveM] Keeping status ONLINE for server {$server->id}: port {$server->port} is open despite process not detected");
+                        $status = 'online';
+                    } else {
+                        $status = 'offline';
+                    }
+                } else {
+                    $status = $isCurrentlyRunning ? 'online' : 'offline';
+                }
             }
 
             $engine = $server->engine;
@@ -123,7 +136,7 @@ class ServerController extends Controller
 
             $ping = null;
             if ($status === 'online') {
-                $ping = $this->measureServerPing($server->ip, $server->port);
+                $ping = $this->measureServerPingWithServer($server);
             }
 
             return array_merge($server->toArray(), [
@@ -148,38 +161,144 @@ class ServerController extends Controller
         return 'samp';
     }
 
-    private function measureServerPing(string $ip, int $port, int $timeout = 2): ?int
-{
-    $startTime = microtime(true);
+    private function measureServerPing(string $ip, int $port, string $engine = 'samp', int $timeout = 2): ?int
+    {
+        if (strtolower($engine) === 'fivem') {
+            // Para FiveM, precisamos do objeto Server para determinar se é local ou remoto
+            // Este método será chamado de index() onde temos acesso ao $server
+            // Por enquanto, manter compatibilidade com chamada antiga
+            return $this->measureFivemPing($ip, $port);
+        }
 
-    $socket = @fsockopen("udp://{$ip}", $port, $errno, $errstr, $timeout);
-    if (!$socket) {
+        // SA-MP ping via UDP
+        $startTime = microtime(true);
+
+        $socket = @fsockopen("udp://{$ip}", $port, $errno, $errstr, $timeout);
+        if (!$socket) {
+            return null;
+        }
+
+        stream_set_timeout($socket, $timeout);
+
+        // 🔥 pacote SAMP
+        $ipParts = explode('.', $ip);
+        $packet = 'SAMP';
+        foreach ($ipParts as $part) {
+            $packet .= chr((int)$part);
+        }
+        $packet .= chr($port & 0xFF);
+        $packet .= chr(($port >> 8) & 0xFF);
+        $packet .= 'i';
+
+        fwrite($socket, $packet);
+
+        $response = fread($socket, 2048);
+        fclose($socket);
+
+        if (!$response) {
+            return null;
+        }
+
+        return (int) max(1, round((microtime(true) - $startTime) * 1000));
+    }
+
+    private function measureServerPingWithServer(Server $server): ?int
+    {
+        $engine = strtolower($server->engine ?? 'samp');
+        if ($engine === 'fivem') {
+            return $this->measureFivemPingWithServer($server);
+        }
+
+        // SA-MP ping via UDP
+        return $this->measureServerPing($server->ip, $server->port);
+    }
+
+    private function measureFivemPing(string $ip, int $port): ?int
+    {
+        $urls = [
+            "http://{$ip}:{$port}/info.json",
+            "http://{$ip}:{$port}/players.json"
+        ];
+
+        foreach ($urls as $url) {
+            $startTime = microtime(true);
+
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $url,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT_MS => 1000,
+                CURLOPT_TIMEOUT_MS => 2000,
+                CURLOPT_HTTPHEADER => [
+                    'User-Agent: painel-samp/1.0'
+                ],
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_SSL_VERIFYHOST => false,
+            ]);
+
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+
+            $ping = round((microtime(true) - $startTime) * 1000);
+
+            ActionLogService::append("FiveM ping test: URL={$url}, HTTP={$httpCode}, ping={$ping}ms, error=" . ($error ?: 'none'));
+
+            if ($httpCode === 200 && !$error) {
+                return (int) max(1, $ping);
+            }
+        }
+
+        ActionLogService::append("FiveM ping failed for {$ip}:{$port} - both info.json and players.json failed");
         return null;
     }
 
-    stream_set_timeout($socket, $timeout);
+    private function measureFivemPingWithServer(Server $server): ?int
+    {
+        // Para servidores locais, usar 127.0.0.1
+        // Para servidores remotos, usar o IP público
+        $ip = $server->type === 'local' ? '127.0.0.1' : $server->ip;
+        $port = $server->port;
 
-    // 🔥 pacote SAMP
-    $ipParts = explode('.', $ip);
-    $packet = 'SAMP';
-    foreach ($ipParts as $part) {
-        $packet .= chr((int)$part);
-    }
-    $packet .= chr($port & 0xFF);
-    $packet .= chr(($port >> 8) & 0xFF);
-    $packet .= 'i';
+        $urls = [
+            "http://{$ip}:{$port}/info.json",
+            "http://{$ip}:{$port}/players.json"
+        ];
 
-    fwrite($socket, $packet);
+        foreach ($urls as $url) {
+            $startTime = microtime(true);
 
-    $response = fread($socket, 2048);
-    fclose($socket);
+            $ch = curl_init();
+            curl_setopt_array($ch, [
+                CURLOPT_URL => $url,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT_MS => 1000,
+                CURLOPT_TIMEOUT_MS => 2000,
+                CURLOPT_HTTPHEADER => [
+                    'User-Agent: painel-samp/1.0'
+                ],
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_SSL_VERIFYHOST => false,
+            ]);
 
-    if (!$response) {
+            $response = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            curl_close($ch);
+
+            $ping = round((microtime(true) - $startTime) * 1000);
+
+            ActionLogService::append("FiveM ping: server_id={$server->id}, engine=fivem, ping_url={$url}, http_code={$httpCode}, ping={$ping}ms, error=" . ($error ?: 'none'));
+
+            if ($httpCode === 200 && !$error) {
+                return (int) max(1, $ping);
+            }
+        }
+
+        ActionLogService::append("FiveM ping: server_id={$server->id}, engine=fivem, ping_url=failed - both endpoints failed");
         return null;
     }
-
-    return (int) max(1, round((microtime(true) - $startTime) * 1000));
-}
 
     public function players(int $serverId, SampRconService $rconService)
     {
@@ -311,8 +430,57 @@ class ServerController extends Controller
         return $players;
     }
 
+    public function status(int $serverId, LocalServerService $localServerService)
+    {
+        $server = $this->findServer($serverId);
+
+        if (!$server) {
+            return response()->json(['error' => 'Servidor não encontrado'], 404);
+        }
+
+        $isRunning = $localServerService->isRunning($server);
+        $status = $isRunning ? 'online' : 'offline';
+        $ping = null;
+        $cpu = null;
+        $memory = null;
+        $disk = null;
+
+        $engine = strtolower($server->engine ?? 'samp');
+
+        if ($status === 'online') {
+            $ping = $this->measureServerPingWithServer($server);
+        }
+
+        if ($server->type === 'local') {
+            // Não coletar métricas de CPU/disco durante o status 'starting' para evitar poluição
+            if ($server->status !== 'starting') {
+                $cpu = $localServerService->getServerProcessCpuUsage($server);
+                $memory = $localServerService->getServerProcessMemoryUsage($server);
+                $disk = $localServerService->getServerDiskUsage($server);
+            }
+        }
+
+        if ($server->status !== $status) {
+            $server->status = $status;
+            $server->save();
+        }
+
+        ActionLogService::append("[API] Status refresh: server_id={$server->id}, status={$status}, ping={$ping}, engine={$engine}");
+
+        return response()->json([
+            'status' => $status,
+            'ping' => $ping,
+            'cpu' => $cpu,
+            'memory' => $memory,
+            'disk' => $disk,
+            'updated_at' => now()->toIso8601String(),
+        ]);
+    }
+
     public function start(Request $request, LocalServerService $localServerService)
     {
+        Log::info('[START ENDPOINT HIT]', ['server_id' => $request->input('server_id')]);
+
         $request->validate(['server_id' => 'required|integer']);
         $server = $this->findServer($request->input('server_id'));
 
@@ -325,18 +493,40 @@ class ServerController extends Controller
         }
 
         $this->authorizeAdminOrOwner($request, $server);
+
         $result = $localServerService->start($server);
         $result = $this->sanitizeUtf8Value($result);
 
-        if (!$result['success']) {
-            return $this->jsonResponse(['error' => $result['message'], 'output' => $result['output'] ?? null], 500);
+        if (empty($result['success'])) {
+            $server->status = 'offline';
+            $server->save();
+            return $this->jsonResponse([
+                'success' => false,
+                'status' => 'offline',
+                'message' => $result['message'] ?? 'Falha ao iniciar o servidor.',
+                'output' => $result['output'] ?? null,
+                'debug' => $result['debug'] ?? null,
+                'server_id' => $server->id,
+            ], 500);
         }
 
-        $server->status = 'online';
+        $actualStatus = $result['status'] ?? (
+            $localServerService->isRunning($server) ? 'online' : 'starting'
+        );
+
+        $server->status = $actualStatus;
         $server->save();
 
-        ActionLogService::append("Servidor {$server->name} ({$server->ip}:{$server->port}) iniciado pelo usuário " . ($this->getAuthenticatedUser($request)['email'] ?? 'desconhecido'));
-        return $this->jsonResponse(['status' => 'online', 'server_id' => $server->id, 'output' => $result['output']]);
+        ActionLogService::append("Servidor {$server->name} ({$server->ip}:{$server->port}) iniciou processo de start pelo usuário " . ($this->getAuthenticatedUser($request)['email'] ?? 'desconhecido'));
+
+        return $this->jsonResponse([
+            'success' => true,
+            'status' => $actualStatus,
+            'message' => $result['message'] ?? 'Servidor iniciado com sucesso.',
+            'output' => $result['output'] ?? null,
+            'debug' => $result['debug'] ?? null,
+            'server_id' => $server->id,
+        ]);
     }
 
     public function stop(Request $request, LocalServerService $localServerService)
@@ -366,8 +556,13 @@ class ServerController extends Controller
             ], 500);
         }
 
-        $server->status = 'offline';
+        $server->status = 'stopping';
         $server->save();
+
+        if (!$localServerService->isRunning($server)) {
+            $server->status = 'offline';
+            $server->save();
+        }
 
         ActionLogService::append("Servidor {$server->name} ({$server->ip}:{$server->port}) parado pelo usuário " . ($this->getAuthenticatedUser($request)['email'] ?? 'desconhecido'));
         return $this->jsonResponse(['status' => 'offline', 'server_id' => $server->id, 'output' => $result['output']]);
