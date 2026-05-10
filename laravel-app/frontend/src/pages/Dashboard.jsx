@@ -110,7 +110,7 @@ const Dashboard = () => {
   // Wrapper para setActiveServer que persiste no localStorage
   const setActiveServer = (server) => {
     setActiveServerState(server);
-    const serverId = server ? server.id : null;
+    const serverId = server?.id ? String(server.id) : null;
     setActiveServerId(serverId);
     if (server) {
       localStorage.setItem('activeServerId', serverId);
@@ -129,28 +129,28 @@ const Dashboard = () => {
 
   // Sincronizar activeServer quando servers mudam
   useEffect(() => {
-    if (servers.length > 0) {
-      const filtered = getAccessibleServers(servers, user);
-      if (activeServer) {
-        if (!servers.find((s) => s.id === activeServer.id)) {
-          setActiveServer(filtered.length > 0 ? filtered[0] : null);
-        }
-      } else {
-        if (activeServerId) {
-          const saved = filtered.find((s) => String(s.id) === String(activeServerId));
-          if (saved) {
-            setActiveServer(saved);
-            return;
-          }
-        }
-        if (filtered.length > 0) {
-          setActiveServer(filtered[0]);
-        }
-      }
-    } else {
-      setActiveServer(null);
+  if (servers.length === 0) {
+    setActiveServer(null);
+    return;
+  }
+
+  const filtered = getAccessibleServers(servers, user);
+
+  if (activeServerId) {
+    const savedServer = filtered.find(
+      (s) => String(s.id) === String(activeServerId)
+    );
+
+    if (savedServer) {
+      setActiveServerState(savedServer);
+      return;
     }
-  }, [servers, user, activeServerId]);
+  }
+
+  if (!activeServer && filtered.length > 0) {
+    setActiveServer(filtered[0]);
+  }
+}, [servers, user, activeServerId, activeServer]);
 
   const loadServers = async () => {
     try {
@@ -942,16 +942,6 @@ const Dashboard = () => {
               <span className={`status-pill ${serverSuspended ? 'offline' : serverOnline ? 'online' : 'offline'}`}>
                 {serverStatusLabel}
               </span>
-            </div>
-            <div className="server-hero-meta">
-              <div>
-                <span className="card-label">Plano</span>
-                <strong className="card-value">{activeServer ? serverPlan : '—'}</strong>
-              </div>
-              <div>
-                <span className="card-label">Jogadores</span>
-                <strong className="card-value">{activeServer ? `${serverPlayers}/${activeServer.limit_slots || '∞'}` : '—'}</strong>
-              </div>
             </div>
           </div>
         </div>

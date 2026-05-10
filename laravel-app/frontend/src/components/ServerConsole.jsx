@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Copy, Trash2, Eye, EyeOff } from 'lucide-react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { Copy, Trash2, Eye, EyeOff, Pause, Play, Search, Filter, ArrowDown, Check } from 'lucide-react';
 
 const ServerConsole = ({
   serverLogLines = [],
@@ -8,26 +8,117 @@ const ServerConsole = ({
   activeServer = null
 }) => {
   const [autoScroll, setAutoScroll] = useState(true);
+  const [isPaused, setIsPaused] = useState(false);
+  const [pausedLines, setPausedLines] = useState([]);
   const [localLogs, setLocalLogs] = useState([]);
+  const [filteredLogs, setFilteredLogs] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [activeFilter, setActiveFilter] = useState('all');
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState(false);
   const consoleRef = useRef(null);
+  const lastScrollTop = useRef(0);
+  const isNearBottom = useRef(true);
+
   const engineType = activeServer?.engine || 'samp';
   const serverStatus = String(activeServer?.status || '').toLowerCase();
   const isServerOnline = serverStatus === 'online';
   const badgeText = isServerOnline ? 'LIVE' : 'OFFLINE';
   const badgeStatus = isServerOnline ? 'live' : 'offline';
 
+  // Detectar se usuário está próximo do final
+  const checkNearBottom = useCallback(() => {
+    if (!consoleRef.current) return true;
+    const { scrollTop, scrollHeight, clientHeight } = consoleRef.current;
+    const threshold = 50; // pixels do final
+    return scrollTop + clientHeight >= scrollHeight - threshold;
+  }, []);
+
+  // Handler de scroll inteligente
+  const handleScroll = useCallback(() => {
+    if (!consoleRef.current) return;
+
+    const { scrollTop } = consoleRef.current;
+    const wasNearBottom = isNearBottom.current;
+    isNearBottom.current = checkNearBottom();
+
+    // Se usuário rolou para cima, desativar auto-scroll
+    if (scrollTop < lastScrollTop.current && wasNearBottom) {
+      setAutoScroll(false);
+    }
+
+    // Se voltou para o final, reativar auto-scroll
+    if (isNearBottom.current && !wasNearBottom) {
+      setAutoScroll(true);
+    }
+
+    // Mostrar botão "Voltar ao final" se não estiver no final
+    setShowScrollToBottom(!isNearBottom.current);
+
+    lastScrollTop.current = scrollTop;
+  }, [checkNearBottom]);
+
+  // Scroll para o final
+  const scrollToBottom = useCallback(() => {
+    if (consoleRef.current) {
+      consoleRef.current.scrollTop = consoleRef.current.scrollHeight;
+      setAutoScroll(true);
+      setShowScrollToBottom(false);
+      isNearBottom.current = true;
+    }
+  }, []);
+
+  // Toggle pause/resume
+  const togglePause = useCallback(() => {
+    setIsPaused(!isPaused);
+    if (isPaused) {
+      // Resumindo: adicionar linhas pausadas aos logs locais
+      setLocalLogs(prev => [...prev, ...pausedLines]);
+      setPausedLines([]);
+    }
+  }, [isPaused, pausedLines]);
+
   // Sincronizar logs locais com logs do servidor
   useEffect(() => {
-    setLocalLogs(serverLogLines || []);
-  }, [serverLogLines]);
+    if (isPaused) {
+      // Se pausado, adicionar às linhas pausadas
+      const newLines = serverLogLines.slice(localLogs.length + pausedLines.length);
+      setPausedLines(prev => [...prev, ...newLines]);
+    } else {
+      setLocalLogs(serverLogLines || []);
+    }
+  }, [serverLogLines, isPaused, localLogs.length, pausedLines.length]);
 
   // Auto-scroll para o final quando novos logs chegam
   useEffect(() => {
-    if (autoScroll && consoleRef.current) {
-      const scrollContainer = consoleRef.current;
-      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    if (autoScroll && !isPaused && consoleRef.current && isNearBottom.current) {
+      scrollToBottom();
     }
-  }, [localLogs, autoScroll]);
+  }, [localLogs, autoScroll, isPaused, scrollToBottom]);
+
+  // Aplicar filtros e busca
+  useEffect(() => {
+    let filtered = localLogs;
+
+    // Aplicar filtro de tipo
+    if (activeFilter !== 'all') {
+      filtered = filtered.filter(line => {
+        const { level } = formatLogLine(line);
+        return level === activeFilter;
+      });
+    }
+
+    // Aplicar busca
+    if (searchTerm.trim()) {
+      const term = searchTerm.toLowerCase();
+      filtered = filtered.filter(line => {
+        const { content } = formatLogLine(line);
+        return content.toLowerCase().includes(term);
+      });
+    }
+
+    setFilteredLogs(filtered);
+  }, [localLogs, activeFilter, searchTerm]);
 
   const formatLogLine = (line) => {
     const timestampMatch = line.match(/^\[[^\]]+\]/);
@@ -37,19 +128,19 @@ const ServerConsole = ({
     // Para FiveM, detectar cores especiais e tipos de evento
     if (engineType === 'fivem') {
       const normalized = content.toUpperCase();
-      const isResource = /RESOURCE|STARTED RESOURCE|STARTING RESOURCE|STOPPED RESOURCE|LOADED RESOURCE|FAILED TO LOAD/i.test(content);
-      const isPlayer = /PLAYER|CONNECT|DISCONNECT|JOINED|LEFT/i.test(content);
-      const isCommand = /COMMAND|EXECUTED|REGISTERED|TXADMIN/i.test(content);
+      const isResource = /RESOURCE|STARTED RESOURCE|STARTING RESOURCE|STOPPED RESOURCE|LOADED RESOURCE|FAILED TO LOAD|ENSURE/i.test(content);
+      const isPlayer = /PLAYER|CONNECT|DISCONNECT|JOINED|LEFT|PLAYER CONNECTED|PLAYER DISCONNECTED/i.test(content);
+      const isCommand = /COMMAND|EXECUTED|REGISTERED|TXADMIN|CITIZEN-SERVER/i.test(content);
+      const isError = /ERROR|FAILED|EXCEPTION|STACK TRACEBACK|SCRIPT ERROR|FATAL/i.test(content);
+      const isWarning = /WARNING|WARN|DEPRECATED/i.test(content);
 
-      const level = isResource
-        ? 'resource'
-        : normalized.includes('ERROR') || normalized.includes('FAIL') || normalized.includes('FATAL')
+      const level = isError
         ? 'error'
-        : normalized.includes('WARNING') || normalized.includes('WARN')
+        : isWarning
         ? 'warning'
-        : normalized.includes('DEBUG')
-        ? 'debug'
-        : normalized.includes('INFO') || isPlayer || isCommand
+        : isResource
+        ? 'resource'
+        : isPlayer || isCommand
         ? 'info'
         : 'default';
 
@@ -72,18 +163,20 @@ const ServerConsole = ({
 
   const clearLocalLogs = () => {
     setLocalLogs([]);
-    lastLogCountRef.current = 0;
+    setPausedLines([]);
+    setFilteredLogs([]);
   };
 
   const copyLogsToClipboard = async () => {
     try {
-      const logText = localLogs.slice(-24).map(line => {
+      const logText = filteredLogs.slice(-100).map(line => {
         const { timestamp, content } = formatLogLine(line);
         return `${timestamp} ${content}`;
       }).join('\n');
 
       await navigator.clipboard.writeText(logText);
-      // Poderia adicionar um toast de sucesso aqui
+      setCopyFeedback(true);
+      setTimeout(() => setCopyFeedback(false), 2000);
     } catch (error) {
       console.error('Erro ao copiar logs:', error);
     }
@@ -91,9 +184,20 @@ const ServerConsole = ({
 
   const toggleAutoScroll = () => {
     setAutoScroll(!autoScroll);
+    if (!autoScroll) {
+      scrollToBottom();
+    }
   };
 
-  const displayedLogs = localLogs.slice(-200);
+  const filterButtons = [
+    { key: 'all', label: 'Todos', color: 'gray' },
+    { key: 'error', label: 'Erros', color: 'red' },
+    { key: 'warning', label: 'Avisos', color: 'yellow' },
+    { key: 'resource', label: 'Resources', color: 'green' },
+    { key: 'info', label: 'Info', color: 'blue' },
+  ];
+
+  const displayedLogs = filteredLogs.slice(-300); // Limitar a 300 linhas para performance
 
   return (
     <div className="server-console" data-engine={engineType}>
@@ -112,20 +216,31 @@ const ServerConsole = ({
         <div className="console-header-actions">
           <button
             type="button"
+            onClick={togglePause}
+            className={`console-btn ${isPaused ? 'paused' : ''}`}
+            title={isPaused ? 'Retomar console' : 'Pausar console'}
+          >
+            {isPaused ? <Play size={16} /> : <Pause size={16} />}
+            {isPaused && pausedLines.length > 0 && (
+              <span className="pause-count">{pausedLines.length}</span>
+            )}
+          </button>
+          <button
+            type="button"
             onClick={toggleAutoScroll}
             className={`console-btn ${autoScroll ? 'active' : ''}`}
             title={autoScroll ? 'Desativar auto-scroll' : 'Ativar auto-scroll'}
           >
-            {autoScroll ? <Eye /> : <EyeOff />}
+            {autoScroll ? <Eye size={16} /> : <EyeOff size={16} />}
           </button>
           <button
             type="button"
             onClick={copyLogsToClipboard}
-            className="console-btn"
+            className={`console-btn ${copyFeedback ? 'success' : ''}`}
             title="Copiar logs para clipboard"
             disabled={displayedLogs.length === 0}
           >
-            <Copy />
+            {copyFeedback ? <Check size={16} /> : <Copy size={16} />}
           </button>
           <button
             type="button"
@@ -134,12 +249,56 @@ const ServerConsole = ({
             title="Limpar visualização local"
             disabled={displayedLogs.length === 0}
           >
-            <Trash2 />
+            <Trash2 size={16} />
           </button>
         </div>
       </div>
 
-      <div className={`console-body ${engineType === 'fivem' ? 'console-fivem' : ''}`} ref={consoleRef}>
+      <div className="console-filters">
+        <div className="console-search">
+          <Search size={16} />
+          <input
+            type="text"
+            placeholder="Buscar no console..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="console-search-input"
+          />
+        </div>
+        <div className="console-filter-buttons">
+          {filterButtons.map(filter => (
+            <button
+              key={filter.key}
+              onClick={() => setActiveFilter(filter.key)}
+              className={`console-filter-btn ${activeFilter === filter.key ? 'active' : ''} filter-${filter.color}`}
+              title={`Mostrar apenas ${filter.label.toLowerCase()}`}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className={`console-body ${engineType === 'fivem' ? 'console-fivem' : ''}`} ref={consoleRef} onScroll={handleScroll}>
+        {showScrollToBottom && (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className="console-scroll-to-bottom"
+            title="Voltar ao final"
+          >
+            <ArrowDown size={16} />
+            <span>Final</span>
+          </button>
+        )}
+
+        {isPaused && pausedLines.length > 0 && (
+          <div className="console-paused-notice">
+            <Pause size={14} />
+            <span>Console pausado - {pausedLines.length} novas linhas</span>
+          </div>
+        )}
+
         {serverLogLoading && displayedLogs.length === 0 ? (
           <div className="console-empty">
             <div className="console-empty-icon">
