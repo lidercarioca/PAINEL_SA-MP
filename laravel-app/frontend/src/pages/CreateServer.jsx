@@ -16,6 +16,7 @@ const CreateServer = () => {
     port: 7777,
     password: '',
     type: 'local',
+    engine: 'samp',
     folder: '',
     owner_id: null,
     plan_id: null,
@@ -92,6 +93,7 @@ const CreateServer = () => {
           port: server.port || 7777,
           password: server.password || '',
           type: server.type || 'local',
+          engine: server.engine || 'samp',
           folder: server.folder || '',
           owner_id: server.owner_id || null,
           plan_id: server.plan_id || null,
@@ -154,6 +156,21 @@ const CreateServer = () => {
       }
       setMessage(message || (editingServerId ? 'Erro ao atualizar servidor.' : 'Erro ao criar servidor.'));
     }
+  };
+
+  const handleEngineChange = (engine) => {
+    const engineDefaults = {
+      samp: { port: 7777, gamemode: 'SA-MP' },
+      fivem: { port: 30120, gamemode: 'FiveM' }
+    };
+
+    const defaults = engineDefaults[engine] || engineDefaults.samp;
+    setNewServer((prev) => ({
+      ...prev,
+      engine: engine,
+      port: defaults.port,
+      game_mode: defaults.gamemode
+    }));
   };
 
   const handleFolderSelect = (event) => {
@@ -362,6 +379,41 @@ const CreateServer = () => {
                   value={newServer.password}
                   onChange={(e) => setNewServer({ ...newServer, password: e.target.value })}
                 />
+              </div>
+              <div className="form-field">
+                <label>Engine / Motor do Jogo</label>
+                <div className="engine-selector" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <button
+                    type="button"
+                    className={`engine-button ${newServer.engine === 'samp' ? 'active' : ''}`}
+                    style={{
+                      padding: '12px',
+                      border: `2px solid ${newServer.engine === 'samp' ? '#4CAF50' : '#ccc'}`,
+                      borderRadius: '6px',
+                      background: newServer.engine === 'samp' ? '#f0f8f0' : '#fff',
+                      cursor: 'pointer',
+                      fontWeight: newServer.engine === 'samp' ? 'bold' : 'normal'
+                    }}
+                    onClick={() => handleEngineChange('samp')}
+                  >
+                    🎮 SA-MP
+                  </button>
+                  <button
+                    type="button"
+                    className={`engine-button ${newServer.engine === 'fivem' ? 'active' : ''}`}
+                    style={{
+                      padding: '12px',
+                      border: `2px solid ${newServer.engine === 'fivem' ? '#4CAF50' : '#ccc'}`,
+                      borderRadius: '6px',
+                      background: newServer.engine === 'fivem' ? '#f0f8f0' : '#fff',
+                      cursor: 'pointer',
+                      fontWeight: newServer.engine === 'fivem' ? 'bold' : 'normal'
+                    }}
+                    onClick={() => handleEngineChange('fivem')}
+                  >
+                    🚀 FiveM
+                  </button>
+                </div>
               </div>
               <div className="form-field">
                 <label>Tipo / Local</label>

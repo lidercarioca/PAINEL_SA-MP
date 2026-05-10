@@ -157,6 +157,12 @@ const Console = () => {
       return;
     }
 
+    // Verificação para FiveM
+    if (server.engine === 'fivem') {
+      setCommandFeedback('⚠️ FiveM não suporta RCON SA-MP. Use o console do FXServer para enviar comandos.');
+      return;
+    }
+
     setSendingCommand(true);
     try {
       await sendRconCommand(server.id, command.trim());
@@ -172,7 +178,12 @@ const Console = () => {
 
   const statusLabel = getStatusLabel(server?.status);
   const serverAddress = server ? `${server.ip}:${server.port}` : '—';
-  const engineLabel = server?.engine || server?.game_mode || server?.gamemode || server?.gamemode_name || '—';
+  const engine = server?.engine || 'samp';
+  const engineDisplay = {
+    samp: { icon: '🎮', label: 'SA-MP', commandPlaceholder: 'Digite um comando RCON SA-MP e pressione Enter' },
+    fivem: { icon: '🚀', label: 'FiveM', commandPlaceholder: 'Digite um comando FiveM console e pressione Enter' }
+  };
+  const engineInfo = engineDisplay[engine] || engineDisplay.samp;
 
   return (
     <section className="console-page">
@@ -203,7 +214,9 @@ const Console = () => {
         </div>
         <div className="console-info-card">
           <strong>Engine</strong>
-          <span>{engineLabel}</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>{engineInfo.icon} {engineInfo.label}</span>
+          </span>
         </div>
       </div>
 
@@ -290,7 +303,7 @@ const Console = () => {
           <input
             className="console-command-input"
             type="text"
-            placeholder="Digite um comando RCON e pressione Enter"
+            placeholder={engineInfo.commandPlaceholder}
             value={command}
             onChange={(event) => setCommand(event.target.value)}
             disabled={!server}

@@ -11,6 +11,7 @@ const ServerConsole = ({
   const [localLogs, setLocalLogs] = useState([]);
   const consoleRef = useRef(null);
   const lastLogCountRef = useRef(0);
+  const engineType = activeServer?.engine || 'samp';
 
   // Sincronizar logs locais com logs do servidor
   useEffect(() => {
@@ -33,7 +34,23 @@ const ServerConsole = ({
     const timestamp = timestampMatch ? timestampMatch[0] : '';
     const content = timestampMatch ? line.slice(timestamp.length).trim() : line;
 
-    // Detectar nível do log baseado no conteúdo
+    // Para FiveM, detectar cores especiais
+    if (engineType === 'fivem') {
+      // Cores específicas do FiveM
+      const level = content.includes('^1') || content.includes('ERROR') || content.includes('FAIL') || content.includes('error')
+        ? 'error' // Vermelho
+        : content.includes('^3') || content.includes('WARNING') || content.includes('WARN') || content.includes('warn')
+        ? 'warning' // Amarelo
+        : content.includes('^2') || content.includes('SUCCESS') || content.includes('INFO') || content.includes('info')
+        ? 'info' // Verde
+        : content.includes('^4') || content.includes('DEBUG') || content.includes('debug')
+        ? 'debug' // Azul
+        : 'default';
+
+      return { timestamp, content, level, isFiveM: true };
+    }
+
+    // Para SA-MP, manter detectar nível do log baseado no conteúdo
     const level = content.includes('ERROR') || content.includes('FAIL')
       ? 'error'
       : content.includes('WARNING') || content.includes('WARN')
@@ -44,7 +61,7 @@ const ServerConsole = ({
       ? 'debug'
       : 'default';
 
-    return { timestamp, content, level };
+    return { timestamp, content, level, isFiveM: false };
   };
 
   const clearLocalLogs = () => {
@@ -73,12 +90,14 @@ const ServerConsole = ({
   const displayedLogs = localLogs.slice(-24);
 
   return (
-    <div className="server-console">
+    <div className="server-console" data-engine={engineType}>
       <div className="console-header">
         <div className="console-header-left">
-          <h3>Console Terminal</h3>
+          <h3>
+            {engineType === 'fivem' ? 'FXServer Terminal' : 'Console Terminal'}
+          </h3>
           {activeServer && (
-            <span className="console-live-badge">
+            <span className={`console-live-badge ${engineType === 'fivem' ? 'fivem-badge' : ''}`}>
               <span className="live-dot"></span>
               LIVE
             </span>
@@ -114,7 +133,7 @@ const ServerConsole = ({
         </div>
       </div>
 
-      <div className="console-body" ref={consoleRef}>
+      <div className={`console-body ${engineType === 'fivem' ? 'console-fivem' : ''}`} ref={consoleRef}>
         {serverLogLoading && displayedLogs.length === 0 ? (
           <div className="console-empty">
             <div className="console-empty-icon">
@@ -131,7 +150,7 @@ const ServerConsole = ({
                 <line x1="12" y1="17" x2="12" y2="21"></line>
               </svg>
             </div>
-            <p>Carregando logs do servidor...</p>
+            <p>{engineType === 'fivem' ? 'Conectando ao FXServer...' : 'Carregando logs do servidor...'}</p>
             <span>Conectando ao terminal</span>
           </div>
         ) : serverLogError ? (
@@ -158,7 +177,7 @@ const ServerConsole = ({
             {displayedLogs.map((line, index) => {
               const { timestamp, content, level } = formatLogLine(line);
               return (
-                <div key={index} className={`console-line console-${level}`}>
+                <div key={index} className={`console-line console-${level} ${engineType === 'fivem' ? `fivem-${level}` : ''}`}>
                   {timestamp && <span className="console-timestamp">{timestamp}</span>}
                   <span className="console-content">{content}</span>
                 </div>
@@ -181,7 +200,7 @@ const ServerConsole = ({
                 <line x1="12" y1="17" x2="12" y2="21"></line>
               </svg>
             </div>
-            <p>Aguardando logs do servidor...</p>
+            <p>{engineType === 'fivem' ? 'Aguardando saída do FXServer...' : 'Aguardando logs do servidor...'}</p>
             <span>Os logs aparecerão aqui quando houver atividade</span>
           </div>
         )}

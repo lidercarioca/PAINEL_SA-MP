@@ -22,7 +22,7 @@ export const getApiErrorMessage = (error) => {
 
 export const login = (email, password) => api.post('/login', { email, password });
 export const logout = () => api.post('/logout');
-export const fetchServers = () => api.get('/servers');
+export const fetchServers = () => api.get('/servers', { params: { t: Date.now() } });
 export const createServer = (data) => api.post('/servers/create', data);
 export const deleteServer = (serverId) => api.post('/servers/delete', { server_id: serverId });
 export const startServer = (serverId) => api.post('/servers/start', { server_id: serverId });

@@ -9,43 +9,74 @@ class LocalServerService
 {
     public function start(Server $server): array
     {
-        $folder = $this->resolveFolder($server->folder);
+        $rootPath = $this->resolveFolder($server->folder);
 
-        if (!$folder || !is_dir($folder)) {
+        if (!$rootPath || !is_dir($rootPath)) {
             return [
                 'success' => false,
                 'message' => 'Pasta do servidor inválida ou inexistente.'
             ];
         }
 
-        $exe = $this->findExecutable($folder, $this->getKnownExecutables());
+        $engine = strtolower($server->engine ?? 'samp');
+        $useRunBat = false;
+
+        if ($engine === 'fivem') {
+            $exe = $this->resolveFiveMExecutable($rootPath);
+            $useRunBat = $exe && strtolower(basename($exe)) === 'run.bat';
+            $configFile = $useRunBat ? null : $this->resolveFiveMConfig($rootPath);
+        } else {
+            $exe = $this->resolveSampExecutable($rootPath);
+            $configFile = $this->resolveSampConfig($rootPath);
+        }
+
         if (!$exe) {
+            $message = $engine === 'fivem'
+                ? 'Executável do servidor não encontrado.'
+                : 'samp-server.exe não encontrado na pasta cadastrada.';
+
+            ActionLogService::append("Start debug: engine={$engine}, rootPath={$rootPath}, executableFound=0, configFound=" . ($configFile ? '1' : '0') . ", useRunBat=" . ($useRunBat ? '1' : '0'));
+
             return [
                 'success' => false,
-                'message' => 'Executável do servidor não encontrado.',
+                'message' => $message,
             ];
         }
 
-        $configPath = $folder . DIRECTORY_SEPARATOR . 'server.cfg';
-        if (!file_exists($configPath)) {
+        if (!$configFile && !$useRunBat) {
+            ActionLogService::append("Start debug: engine={$engine}, rootPath={$rootPath}, executableFound=1, configFound=0, useRunBat=" . ($useRunBat ? '1' : '0'));
             return [
                 'success' => false,
-                'message' => 'Arquivo server.cfg não encontrado.',
+                'message' => $engine === 'fivem'
+                    ? 'Arquivo de configuração do FiveM não encontrado na pasta cadastrada.'
+                    : 'server.cfg não encontrado na pasta cadastrada.',
             ];
         }
 
-        if (!$this->validateServerConfig($configPath)) {
+        $executablePath = $rootPath . DIRECTORY_SEPARATOR . $exe;
+        $configPath = $configFile ? $rootPath . DIRECTORY_SEPARATOR . $configFile : null;
+
+        if ($configPath && !file_exists($configPath)) {
             return [
                 'success' => false,
-                'message' => 'server.cfg inválido.',
+                'message' => 'Arquivo ' . $configFile . ' não encontrado.',
             ];
         }
 
-        if (!$this->syncServerConfig($server, $configPath)) {
+        if ($engine !== 'fivem' && $configPath && !$this->validateServerConfig($configPath)) {
             return [
                 'success' => false,
-                'message' => 'Falha ao aplicar limites ao server.cfg.',
+                'message' => $configFile . ' inválido.',
             ];
+        }
+
+        if ($engine !== 'fivem' && $configPath) {
+            if (!$this->syncServerConfig($server, $configPath)) {
+                return [
+                    'success' => false,
+                    'message' => 'Falha ao aplicar limites ao ' . $configFile . '.',
+                ];
+            }
         }
 
         if (!empty($server->port) && $this->isPortInUse((int) $server->port)) {
@@ -56,7 +87,7 @@ class LocalServerService
         }
 
         try {
-            $existingPids = $this->findProcessIds($folder, $exe);
+            $existingPids = $this->findProcessIds($rootPath, $exe);
             if (!empty($existingPids)) {
                 return [
                     'success' => true,
@@ -65,23 +96,12 @@ class LocalServerService
                 ];
             }
 
-            $cmd = $this->buildStartCommand($folder, $exe, $server->limit_ram);
-
-            ActionLogService::append("Executando comando de start para servidor {$server->name} ({$server->ip}:{$server->port}): {$cmd}");
+            $cmd = $this->buildStartCommandByEngine($server, $rootPath, $exe, $configFile);
+            ActionLogService::append("Start resolver: engine={$engine}, rootPath={$rootPath}, executablePath={$executablePath}, configPath={$configPath}, workingDirectory={$rootPath}, command={$cmd}");
             pclose(popen($cmd, "r"));
 
-            // Aguarda um pouco para o processo subir e valida se ele realmente começou.
-            sleep(1);
-            $newPids = $this->findProcessIds($folder, $exe);
-            if (empty($newPids)) {
-                if ($this->isProcessRunning($exe)) {
-                    return [
-                        'success' => true,
-                        'message' => 'Servidor iniciado com sucesso.',
-                        'output' => $cmd
-                    ];
-                }
-
+            $started = $this->waitForServerStart($rootPath, $exe, $server->port, $engine);
+            if (!$started) {
                 return [
                     'success' => false,
                     'message' => 'Falha ao iniciar o servidor. O processo não foi encontrado após o comando de start.',
@@ -115,6 +135,42 @@ class LocalServerService
             'sampsvr',
             'server',
         ];
+    }
+
+    protected function resolveSampExecutable(string $rootPath): ?string
+    {
+        $candidates = [
+            'samp-server.exe',
+            'samp03svr.exe',
+            'sampsvr.exe',
+            'server.exe',
+            'samp-server',
+            'samp03svr',
+            'sampsvr',
+            'server',
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (file_exists($rootPath . DIRECTORY_SEPARATOR . $candidate)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    protected function resolveSampConfig(string $rootPath): ?string
+    {
+        return file_exists($rootPath . DIRECTORY_SEPARATOR . 'server.cfg') ? 'server.cfg' : null;
+    }
+
+    protected function resolveServerConfig(string $rootPath, string $engine): ?string
+    {
+        if (strtolower($engine) === 'fivem') {
+            return $this->resolveFiveMConfig($rootPath);
+        }
+
+        return $this->resolveSampConfig($rootPath);
     }
 
     protected function isWindows(): bool
@@ -179,21 +235,32 @@ class LocalServerService
 
     public function isRunning(Server $server): bool
     {
-        $folder = $this->resolveFolder($server->folder);
-        if (!$folder || !is_dir($folder)) {
+        $rootPath = $this->resolveFolder($server->folder);
+        if (!$rootPath || !is_dir($rootPath)) {
             return false;
         }
 
-        $knownExecutables = $this->getKnownExecutables();
-        $exe = $this->findExecutable($folder, $knownExecutables);
-        if ($exe) {
-            $pids = $this->findProcessIds($folder, $exe);
-            if (!empty($pids)) {
-                return true;
-            }
+        $engine = strtolower($server->engine ?? 'samp');
+        if ($engine === 'fivem') {
+            $exe = $this->resolveFiveMExecutable($rootPath);
+        } else {
+            $exe = $this->resolveSampExecutable($rootPath);
         }
 
-        return $this->isAnyKnownProcessRunning($knownExecutables);
+        if (!$exe) {
+            return false;
+        }
+
+        $pids = $this->findProcessIds($rootPath, $exe);
+        if (!empty($pids)) {
+            return true;
+        }
+
+        if (!empty($server->port) && $this->isPortInUse((int) $server->port)) {
+            return true;
+        }
+
+        return false;
     }
 
     protected function findProcessIds(string $folder, string $exe): array
@@ -203,7 +270,13 @@ class LocalServerService
             $status = 0;
             $escapedExe = str_replace('"', '\\"', $exe);
             $escapedFolder = str_replace('"', '\\"', $folder);
-            $cmd = 'wmic process where "name=\'' . $escapedExe . '\'" get ProcessId,ExecutablePath,CommandLine /FORMAT:CSV';
+            $basename = strtolower(pathinfo($exe, PATHINFO_BASENAME));
+
+            if (str_ends_with($basename, '.bat')) {
+                $cmd = 'wmic process get ProcessId,ExecutablePath,CommandLine /FORMAT:CSV';
+            } else {
+                $cmd = 'wmic process where "name=\'' . $escapedExe . '\'" get ProcessId,ExecutablePath,CommandLine /FORMAT:CSV';
+            }
 
             exec($cmd, $output, $status);
             $pids = [];
@@ -563,40 +636,71 @@ class LocalServerService
         return $this->stop($server);
     }
 
-    protected function buildStartCommand(string $folder, string $exe, ?int $limitRamMb): string
+    protected function buildStartCommandByEngine(Server $server, string $rootPath, string $exe, ?string $configFile = null): string
     {
-        $fullPath = $folder . DIRECTORY_SEPARATOR . $exe;
+        $engine = strtolower($server->engine ?? 'samp');
+        $executablePath = $rootPath . DIRECTORY_SEPARATOR . $exe;
+        $execParam = '';
 
-        if ($this->isWindows()) {
-            $quotedFolder = $this->escapePowerShellSingleQuotedString($folder);
-            $quotedExe = $this->escapePowerShellSingleQuotedString($fullPath);
-
-            if ($limitRamMb === null || $limitRamMb <= 0) {
-                $quotedFolder = '"' . str_replace('"', '\\"', $folder) . '"';
-                $quotedFullPath = '"' . str_replace('"', '\\"', $fullPath) . '"';
-                return 'start /B "" /D ' . $quotedFolder . ' ' . $quotedFullPath;
+        if ($engine === 'fivem' && !empty($configFile)) {
+            $configPath = $rootPath . DIRECTORY_SEPARATOR . $configFile;
+            if ($this->isPathInsideRoot($configPath, $rootPath)) {
+                $relativeConfig = $this->getRelativePath($rootPath, $configPath);
+                $execParam = ' +exec "' . str_replace('"', '\\"', $relativeConfig) . '"';
+            } else {
+                $execParam = ' +exec "' . str_replace('"', '\\"', $configPath) . '"';
             }
-
-            $psCommand = '& { '
-                . '$limit = ' . (int) $limitRamMb . '; '
-                . '$exe = ' . $quotedExe . '; '
-                . '$wd = ' . $quotedFolder . '; '
-                . '$proc = Start-Process -FilePath $exe -WorkingDirectory $wd -PassThru -WindowStyle Hidden; '
-                . 'while (-not $proc.HasExited) { '
-                . 'try { if ($proc.WorkingSet64 -gt ($limit * 1MB)) { $proc.Kill(); break } } catch {} '
-                . 'Start-Sleep -Seconds 1; '
-                . '} '
-                . '}';
-
-            $escapedPsCommand = str_replace('"', '""', $psCommand);
-            return 'start /B "" powershell -NoProfile -WindowStyle Hidden -Command "' . $escapedPsCommand . '"';
         }
 
-        $quotedFolder = escapeshellarg($folder);
-        $quotedFullPath = escapeshellarg($fullPath);
-        $command = 'cd ' . $quotedFolder . ' && chmod +x ' . $quotedFullPath . ' >/dev/null 2>&1 && nohup ' . $quotedFullPath . ' >/dev/null 2>&1 &';
+        if ($this->isWindows()) {
+            $quotedFolder = '"' . str_replace('"', '\\"', $rootPath) . '"';
+            $quotedExe = '"' . str_replace('"', '\\"', $executablePath) . '"';
+            if ($engine === 'fivem' && strtolower(basename($exe)) === 'run.bat') {
+                return 'cmd /c start "" /D ' . $quotedFolder . ' ' . $quotedExe;
+            }
+            return 'start /B "" /D ' . $quotedFolder . ' ' . $quotedExe . $execParam;
+        }
+
+        $quotedFolder = escapeshellarg($rootPath);
+        $quotedExe = escapeshellarg($executablePath);
+        $command = 'cd ' . $quotedFolder . ' && chmod +x ' . $quotedExe . ' >/dev/null 2>&1 && nohup ' . $quotedExe . $execParam . ' >/dev/null 2>&1 &';
 
         return $command;
+    }
+
+    protected function waitForServerStart(string $rootPath, string $exe, ?int $port, string $engine): bool
+    {
+        for ($attempt = 0; $attempt < 6; $attempt++) {
+            sleep(1);
+            if (!empty($this->findProcessIds($rootPath, $exe))) {
+                return true;
+            }
+
+            if (!empty($port) && $this->isPortInUse((int) $port)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected function isPathInsideRoot(string $path, string $rootPath): bool
+    {
+        $normalizedPath = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $path);
+        $normalizedRoot = rtrim(str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $rootPath), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        return str_starts_with($normalizedPath, $normalizedRoot);
+    }
+
+    protected function getRelativePath(string $rootPath, string $path): string
+    {
+        $normalizedRoot = rtrim(str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $rootPath), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR;
+        $normalizedPath = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $path);
+
+        if (str_starts_with($normalizedPath, $normalizedRoot)) {
+            return substr($normalizedPath, strlen($normalizedRoot));
+        }
+
+        return $path;
     }
 
     protected function escapePowerShellSingleQuotedString(string $value): string
@@ -707,6 +811,50 @@ class LocalServerService
         return null;
     }
 
+    protected function resolveFiveMExecutable(string $folder): ?string
+    {
+        // FiveM candidates em ordem de prioridade
+        $candidates = [
+            'run.bat', // Prioridade para wrapper personalizado
+            'artifacts' . DIRECTORY_SEPARATOR . 'FXServer.exe',
+            'artifacts' . DIRECTORY_SEPARATOR . 'server' . DIRECTORY_SEPARATOR . 'FXServer.exe',
+            'FXServer.exe',
+        ];
+
+        foreach ($candidates as $candidate) {
+            $path = rtrim($folder, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $candidate;
+            if (file_exists($path)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    protected function resolveFiveMConfig(string $folder): ?string
+    {
+        // FiveM config candidates em ordem de prioridade
+        $candidates = [
+            'server.cfg',
+            'config.cfg',
+            'txData' . DIRECTORY_SEPARATOR . 'default' . DIRECTORY_SEPARATOR . 'server.cfg',
+            'txData' . DIRECTORY_SEPARATOR . 'default' . DIRECTORY_SEPARATOR . 'config.cfg',
+            'zirix-data' . DIRECTORY_SEPARATOR . 'server.cfg',
+            'zirix-data' . DIRECTORY_SEPARATOR . 'config.cfg',
+            'zirix-data' . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'server.cfg',
+            'zirix-data' . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'config.cfg',
+        ];
+
+        foreach ($candidates as $candidate) {
+            $path = rtrim($folder, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $candidate;
+            if (file_exists($path)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
     protected function validateServerConfig(string $configPath): bool
     {
         $content = file_get_contents($configPath);
@@ -714,28 +862,37 @@ class LocalServerService
             return false;
         }
 
-        $lines = preg_split('/\r?\n/', $content);
-        $validLineCount = 0;
-        $hasPort = false;
+        // Verificar extensão do arquivo para determinar tipo de validação
+        $extension = strtolower(pathinfo($configPath, PATHINFO_EXTENSION));
 
-        foreach ($lines as $line) {
-            $line = trim($line);
-            if ($line === '' || str_starts_with($line, '#')) {
-                continue;
+        if ($extension === 'cfg') {
+            // Validação para arquivos .cfg (SA-MP style)
+            $lines = preg_split('/\r?\n/', $content);
+            $validLineCount = 0;
+            $hasPort = false;
+
+            foreach ($lines as $line) {
+                $line = trim($line);
+                if ($line === '' || str_starts_with($line, '#')) {
+                    continue;
+                }
+
+                $parts = preg_split('/\s+/', $line, 2);
+                if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
+                    return false;
+                }
+
+                $validLineCount++;
+                if (strtolower($parts[0]) === 'port') {
+                    $hasPort = is_numeric($parts[1]) && (int) $parts[1] > 0;
+                }
             }
 
-            $parts = preg_split('/\s+/', $line, 2);
-            if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
-                return false;
-            }
-
-            $validLineCount++;
-            if (strtolower($parts[0]) === 'port') {
-                $hasPort = is_numeric($parts[1]) && (int) $parts[1] > 0;
-            }
+            return $validLineCount > 0 && $hasPort;
         }
 
-        return $validLineCount > 0 && $hasPort;
+        // Para outros formatos (FiveM JSON, etc.), apenas verificar se tem conteúdo
+        return strlen(trim($content)) > 0;
     }
 
     protected function isPortInUse(int $port): bool

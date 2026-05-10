@@ -1,5 +1,5 @@
 import React from 'react';
-import { createBrowserRouter, RouterProvider, Navigate, Outlet, NavLink, useLocation } from 'react-router-dom';
+import { createBrowserRouter, RouterProvider, Navigate, Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   Home,
   HardDrive,
@@ -13,6 +13,7 @@ import {
   LogOut,
   Menu,
   X,
+  TrendingUp,
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
@@ -25,6 +26,7 @@ import Finance from './pages/Finance';
 import Servers from './pages/Servers';
 import CreateServer from './pages/CreateServer';
 import PlaceholderPage from './pages/PlaceholderPage';
+import { logout, getApiErrorMessage } from './services/api';
 
 const router = createBrowserRouter(
   [
@@ -175,6 +177,7 @@ function RootLayout() {
   const [user, setUser] = React.useState(null);
   const [sidebarOpen, setSidebarOpen] = React.useState(true);
   const location = useLocation();
+  const navigate = useNavigate();
 
   React.useEffect(() => {
     const authUser = localStorage.getItem('auth_user');
@@ -186,6 +189,21 @@ function RootLayout() {
       }
     }
   }, []);
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_user');
+      navigate('/login');
+    } catch (error) {
+      console.warn('Logout falhou:', error);
+      // Mesmo se falhar, limpa dados locais e redireciona
+      localStorage.removeItem('auth_token');
+      localStorage.removeItem('auth_user');
+      navigate('/login');
+    }
+  };
 
   const getBreadcrumbs = () => {
     const path = location.pathname;
@@ -200,7 +218,7 @@ function RootLayout() {
       '/logs': { label: 'Logs', parent: 'Configurações' },
       '/users': { label: 'Usuários', parent: 'Usuários' },
       '/security': { label: 'Segurança', parent: 'Usuários' },
-      '/finance': { label: 'Financeiro', parent: 'Usuários' },
+      '/finance': { label: 'Planos', parent: 'Financeiro' },
     };
 
     if (path.startsWith('/console')) {
@@ -236,6 +254,12 @@ function RootLayout() {
         { path: '/settings', label: 'Configurações', icon: Settings, adminOnly: true },
         { path: '/dashboard', label: 'Plugins', icon: Puzzle, adminOnly: true },
         { path: '/logs', label: 'Logs', icon: FileText, adminOnly: true },
+      ],
+    },
+    {
+      label: 'FINANCEIRO',
+      items: [
+        { path: '/finance', label: 'Planos', icon: TrendingUp, adminOnly: true },
       ],
     },
     {
@@ -309,6 +333,15 @@ function RootLayout() {
               <span className="topbar-greeting">Olá, {user?.name || 'Usuário'}</span>
               <div className="topbar-avatar">{user?.name?.charAt(0) || '?'}</div>
             </div>
+            <button
+              className="topbar-logout-btn"
+              onClick={handleLogout}
+              title="Sair"
+              aria-label="Logout"
+            >
+              <LogOut size={20} />
+              <span className="logout-text">Sair</span>
+            </button>
           </div>
         </header>
 

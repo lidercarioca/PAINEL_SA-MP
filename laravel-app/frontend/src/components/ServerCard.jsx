@@ -1,9 +1,15 @@
 import React, { useState } from 'react';
 import LoadingButton from './LoadingButton';
+import { resolveEngine } from '../utils/engine';
 
 const ServerCard = ({ server, ownerName, onAction, onRcon, onEdit, onDelete, canControl, isAdmin, actionLoading }) => {
   const [command, setCommand] = useState('');
   const serverGamemode = server.game_mode || server.gamemode || server.gamemode_name;
+  const engine = resolveEngine(server);
+  const engineInfo = {
+    samp: { icon: '🎮', label: 'SA-MP' },
+    fivem: { icon: '🚀', label: 'FiveM' }
+  }[engine];
 
   const isLoading = (action) => actionLoading?.serverId === server.id && actionLoading?.action === action;
 
@@ -34,9 +40,21 @@ const ServerCard = ({ server, ownerName, onAction, onRcon, onEdit, onDelete, can
           <h3>{server.name}</h3>
           <p className="server-card-address">{server.ip}:{server.port}</p>
         </div>
-        <span className={`status-badge ${statusClass}`}>
-          {getStatusLabel(server.status, server.ping)}
-        </span>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <span className="engine-badge" style={{
+            padding: '6px 12px',
+            borderRadius: '4px',
+            fontSize: '12px',
+            fontWeight: 'bold',
+            background: '#e3f2fd',
+            color: '#1976d2'
+          }}>
+            {engineInfo.icon} {engineInfo.label}
+          </span>
+          <span className={`status-badge ${statusClass}`}>
+            {getStatusLabel(server.status, server.ping)}
+          </span>
+        </div>
       </div>
 
       <div className="server-card-meta">

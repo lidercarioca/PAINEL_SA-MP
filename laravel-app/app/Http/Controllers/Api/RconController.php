@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Server;
 use App\Services\ActionLogService;
 use App\Services\SampRconService;
+use App\Engines\EngineFactory;
 use Illuminate\Http\Request;
 
 class RconController extends Controller
@@ -28,7 +29,7 @@ class RconController extends Controller
         }
     }
 
-    public function send(Request $request, SampRconService $rconService)
+    public function send(Request $request, SampRconService $rconService, EngineFactory $engineFactory)
     {
         $data = $request->validate([
             'server_id' => 'required|integer',
@@ -46,6 +47,16 @@ class RconController extends Controller
             return response()->json(['error' => 'Senha RCON não configurada'], 400);
         }
 
+        // Suporta ambos os engines
+        $engine = $server->engine ?? 'samp';
+        
+        if ($engine === 'fivem') {
+            // FiveM não usa RCON SA-MP, então retornamos um aviso
+            ActionLogService::append("Tentativa de enviar comando RCON para servidor FiveM {$server->name} - FiveM não suporta RCON SA-MP");
+            return response()->json(['warning' => 'FiveM não suporta RCON SA-MP. Use o console FXServer para enviar comandos.'], 400);
+        }
+
+        // SA-MP usa RCON padrão
         $success = $rconService->sendCommand(
             $server->ip,
             $server->port,

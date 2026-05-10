@@ -90,7 +90,20 @@ class LogController extends Controller
             }
 
             if (!$logPath) {
-                return response()->json(['error' => 'Arquivo de log não encontrado'], 404);
+                $isFiveM = strtolower($server->engine ?? '') === 'fivem';
+                if ($isFiveM && $fileKey === 'server_log') {
+                    return response()->json([
+                        'success' => false,
+                        'lines' => [],
+                        'message' => 'Arquivo de log não encontrado para FiveM. Use txAdmin ou o console nativo do servidor.',
+                    ]);
+                }
+
+                return response()->json([
+                    'success' => false,
+                    'lines' => [],
+                    'message' => 'Arquivo de log não encontrado.',
+                ]);
             }
         } else {
             $this->authorizeAdmin($request);

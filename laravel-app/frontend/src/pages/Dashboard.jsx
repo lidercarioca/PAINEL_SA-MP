@@ -23,6 +23,7 @@ import ServerCard from '../components/ServerCard';
 import LoadingButton from '../components/LoadingButton';
 import PlayersChart from '../components/PlayersChart';
 import ServerConsole from '../components/ServerConsole';
+import { resolveEngine, getEngineLabel } from '../utils/engine';
 
 const getStatusLabel = (status, ping = null) => {
   const normalized = String(status || '').toLowerCase();
@@ -40,8 +41,22 @@ const getStatusLabel = (status, ping = null) => {
   }
 };
 
+// Função para obter servidores acessíveis ao usuário
+const getAccessibleServers = (servers, user) => {
+  if (!user) return [];
+  if (user.role === 'admin') {
+    return servers;
+  }
+  // Clientes só veem seus próprios servidores
+  return servers.filter(server => server.owner_id === user.id);
+};
+
 const Dashboard = () => {
   const [servers, setServers] = useState([]);
+  const [activeServer, setActiveServerState] = useState(null);
+  const [activeServerId, setActiveServerId] = useState(null);
+  const activeServerEngine = resolveEngine(activeServer);
+  const activeServerIsFiveM = activeServerEngine === 'fivem';
   const [message, setMessage] = useState(null);
   const [resources, setResources] = useState(null);
   const [user, setUser] = useState(null);
@@ -62,6 +77,7 @@ const Dashboard = () => {
     port: 7777,
     password: '',
     type: 'local',
+    engine: 'samp',
     folder: '',
     owner_id: null,
     plan_id: null,
@@ -83,10 +99,61 @@ const Dashboard = () => {
   const editSectionRef = useRef(null);
   const navigate = useNavigate();
 
+  // Wrapper para setActiveServer que persiste no localStorage
+  const setActiveServer = (server) => {
+    setActiveServerState(server);
+    const serverId = server ? server.id : null;
+    setActiveServerId(serverId);
+    if (server) {
+      localStorage.setItem('activeServerId', serverId);
+    } else {
+      localStorage.removeItem('activeServerId');
+    }
+  };
+
+  // Restaurar servidor do localStorage ao inicializar
+  useEffect(() => {
+    const savedServerId = localStorage.getItem('activeServerId');
+    if (savedServerId) {
+      setActiveServerId(savedServerId);
+    }
+  }, []);
+
+  // Sincronizar activeServer quando servers mudam
+  useEffect(() => {
+    if (servers.length > 0) {
+      const filtered = getAccessibleServers(servers, user);
+      if (activeServer) {
+        if (!servers.find((s) => s.id === activeServer.id)) {
+          setActiveServer(filtered.length > 0 ? filtered[0] : null);
+        }
+      } else {
+        if (activeServerId) {
+          const saved = filtered.find((s) => String(s.id) === String(activeServerId));
+          if (saved) {
+            setActiveServer(saved);
+            return;
+          }
+        }
+        if (filtered.length > 0) {
+          setActiveServer(filtered[0]);
+        }
+      }
+    } else {
+      setActiveServer(null);
+    }
+  }, [servers, user, activeServerId]);
+
   const loadServers = async () => {
     try {
       const { data } = await fetchServers();
       setServers(data);
+      if (activeServerId) {
+        const updatedActive = data.find((s) => String(s.id) === String(activeServerId));
+        if (updatedActive) {
+          setActiveServer(updatedActive);
+        }
+      }
     } catch (error) {
       const message = getApiErrorMessage(error);
       if (error.response?.status === 401) {
@@ -129,7 +196,7 @@ const Dashboard = () => {
     }, 5000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [activeServerId]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -378,6 +445,7 @@ const Dashboard = () => {
       port: server.port || 7777,
       password: server.password || '',
       type: server.type || 'local',
+      engine: resolveEngine(server),
       folder: server.folder || '',
       owner_id: server.owner_id || null,
       plan_id: server.plan_id || null,
@@ -401,6 +469,7 @@ const Dashboard = () => {
       port: 7777,
       password: '',
       type: 'local',
+      engine: 'samp',
       folder: '',
       owner_id: null,
       plan_id: null,
@@ -483,7 +552,6 @@ const Dashboard = () => {
     navigate('/login');
   };
 
-  const activeServer = servers[0] || null;
   const serverPlan = activeServer
     ? plans.find((plan) => plan.id === activeServer.plan_id)?.name || activeServer.plan_name || 'Sem plano'
     : 'Sem plano';
@@ -612,7 +680,67 @@ const Dashboard = () => {
           <header className="dashboard-header">
             <div className="dashboard-header-left">
               <span className="dashboard-context">Painel de Controle</span>
-              <h1 className="dashboard-page-title">Dashboard SA-MP</h1>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                {/* Server Selector */}
+                {getAccessibleServers(servers, user).length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <select
+                      value={activeServer?.id || ''}
+                      onChange={(e) => {
+                        const server = servers.find(s => s.id == e.target.value);
+                        if (server) {
+                          setActiveServer(server);
+                        }
+                      }}
+                      style={{
+                        padding: '8px 14px',
+                        borderRadius: '12px',
+                        border: '1px solid rgba(59, 130, 246, 0.3)',
+                        background: 'rgba(15, 23, 42, 0.9)',
+                        color: '#e2e8f0',
+                        cursor: 'pointer',
+                        fontSize: '0.9rem',
+                        fontWeight: '600',
+                        transition: 'all 200ms ease',
+                      }}
+                      onMouseEnter={(e) => {
+                        e.target.style.borderColor = 'rgba(59, 130, 246, 0.6)';
+                        e.target.style.boxShadow = '0 0 12px rgba(59, 130, 246, 0.2)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.target.style.borderColor = 'rgba(59, 130, 246, 0.3)';
+                        e.target.style.boxShadow = 'none';
+                      }}
+                    >
+                      {getAccessibleServers(servers, user).map((server) => {
+                        const serverEngine = resolveEngine(server);
+                        return (
+                          <option key={server.id} value={server.id}>
+                            {server.status === 'online' ? '🟢' : server.status === 'suspended' ? '🔴' : '⚪'} {server.name} [{getEngineLabel(serverEngine)}]
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                )}
+                <h1 className="dashboard-page-title">
+                  {activeServerIsFiveM ? 'Dashboard FiveM' : 'Dashboard SA-MP'}
+                </h1>
+                {activeServer && (
+                  <span
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '4px',
+                      fontSize: '12px',
+                      fontWeight: 'bold',
+                      background: activeServerIsFiveM ? '#8b5cf6' : '#3b82f6',
+                      color: '#fff',
+                    }}
+                  >
+                    {activeServerIsFiveM ? '🚀 FiveM' : '🎮 SA-MP'}
+                  </span>
+                )}
+              </div>
             </div>
           </header>
 
@@ -746,39 +874,84 @@ const Dashboard = () => {
 
         <div className="card server-info-card">
           <div className="card-header">
-            <h3>Informações do Servidor</h3>
+            <h3>
+              {activeServerIsFiveM ? 'Informações do FiveM' : 'Informações do Servidor'}
+            </h3>
             <small>Detalhes principais</small>
           </div>
           {activeServer ? (
             <div className="server-info-grid">
-              <div>
-                <strong>Hostname</strong>
-                <p>{activeServer.name}</p>
-              </div>
-              <div>
-                <strong>IP:Porta</strong>
-                <p>{serverAddress}</p>
-              </div>
-              <div>
-                <strong>Plano</strong>
-                <p>{serverPlan}</p>
-              </div>
-              <div>
-                <strong>Proprietário</strong>
-                <p>{serverOwnerName || '—'}</p>
-              </div>
-              <div>
-                <strong>Gamemode</strong>
-                <p>{activeServer.game_mode || activeServer.gamemode || '—'}</p>
-              </div>
-              <div>
-                <strong>RAM Limite</strong>
-                <p>{activeServer.limit_ram ? `${activeServer.limit_ram} MB` : '—'}</p>
-              </div>
-              <div>
-                <strong>Disco Limite</strong>
-                <p>{activeServer.disk_limit_gb ? `${activeServer.disk_limit_gb} GB` : 'Ilimitado'}</p>
-              </div>
+              {activeServerIsFiveM ? (
+                <>
+                  <div>
+                    <strong>Servidor FiveM</strong>
+                    <p>{activeServer.name}</p>
+                  </div>
+                  <div>
+                    <strong>Endpoint TCP/UDP</strong>
+                    <p>{serverAddress}</p>
+                  </div>
+                  <div>
+                    <strong>Plano</strong>
+                    <p>{serverPlan}</p>
+                  </div>
+                  <div>
+                    <strong>Proprietário</strong>
+                    <p>{serverOwnerName || '—'}</p>
+                  </div>
+                  <div>
+                    <strong>OneSync</strong>
+                    <p>Ativo</p>
+                  </div>
+                  <div>
+                    <strong>Resources</strong>
+                    <p>{activeServer.limit_slots ? `${activeServer.limit_slots} loaded` : '—'}</p>
+                  </div>
+                  <div>
+                    <strong>txAdmin</strong>
+                    <p>Disponível</p>
+                  </div>
+                  <div>
+                    <strong>Disco Limite</strong>
+                    <p>{activeServer.disk_limit_gb ? `${activeServer.disk_limit_gb} GB` : 'Ilimitado'}</p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <strong>Hostname</strong>
+                    <p>{activeServer.name}</p>
+                  </div>
+                  <div>
+                    <strong>IP:Porta</strong>
+                    <p>{serverAddress}</p>
+                  </div>
+                  <div>
+                    <strong>Plano</strong>
+                    <p>{serverPlan}</p>
+                  </div>
+                  <div>
+                    <strong>Proprietário</strong>
+                    <p>{serverOwnerName || '—'}</p>
+                  </div>
+                  <div>
+                    <strong>Gamemode</strong>
+                    <p>{activeServer.game_mode || activeServer.gamemode || '—'}</p>
+                  </div>
+                  <div>
+                    <strong>RAM Limite</strong>
+                    <p>{activeServer.limit_ram ? `${activeServer.limit_ram} MB` : '—'}</p>
+                  </div>
+                  <div>
+                    <strong>Slots</strong>
+                    <p>{activeServer.limit_slots || '∞'}</p>
+                  </div>
+                  <div>
+                    <strong>Disco Limite</strong>
+                    <p>{activeServer.disk_limit_gb ? `${activeServer.disk_limit_gb} GB` : 'Ilimitado'}</p>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div className="empty-state">Sem servidor configurado.</div>
@@ -829,7 +1002,9 @@ const Dashboard = () => {
 
         <div className="card quick-actions-card">
           <div className="card-header">
-            <h3>Ações Rápidas</h3>
+            <h3>
+              {activeServerIsFiveM ? 'Ações do FiveM' : 'Ações Rápidas'}
+            </h3>
             <small>Atalhos de controle</small>
           </div>
           <div className="quick-actions-grid">
@@ -841,7 +1016,7 @@ const Dashboard = () => {
                     onClick={() => handleAction(activeServer.id, 'start')}
                     className="action-button quick-action-btn btn-start"
                   >
-                    Iniciar
+                    {activeServerIsFiveM ? 'Iniciar FXServer' : 'Iniciar'}
                   </LoadingButton>
                 )}
                 <LoadingButton
@@ -849,14 +1024,14 @@ const Dashboard = () => {
                   onClick={() => handleAction(activeServer.id, 'restart')}
                   className="action-button quick-action-btn btn-restart"
                 >
-                  Reiniciar
+                  {activeServerIsFiveM ? 'Reiniciar FXServer' : 'Reiniciar'}
                 </LoadingButton>
                 <LoadingButton
                   loading={isActionLoading(activeServer.id, 'stop')}
                   onClick={() => handleAction(activeServer.id, 'stop')}
                   className="action-button quick-action-btn btn-stop"
                 >
-                  Parar
+                  {activeServerIsFiveM ? 'Parar FXServer' : 'Parar'}
                 </LoadingButton>
                 {user?.role === 'admin' && (
                   <LoadingButton
@@ -867,16 +1042,57 @@ const Dashboard = () => {
                     Desligar
                   </LoadingButton>
                 )}
-                <button type="button" onClick={scrollToConsole} className="action-button quick-action-btn btn-console">
-                  Ver Console
-                </button>
-                <LoadingButton
-                  loading={false}
-                  onClick={handleSendCommand}
-                  className="action-button quick-action-btn btn-command"
-                >
-                  Enviar Comando
-                </LoadingButton>
+                {activeServerIsFiveM ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={scrollToConsole}
+                      className="action-button quick-action-btn btn-console"
+                      style={{
+                        background: '#8b5cf6',
+                        color: '#fff',
+                        border: 'none',
+                        cursor: 'pointer',
+                        borderRadius: '4px',
+                        padding: '8px 16px',
+                      }}
+                    >
+                      🖥️ txAdmin Console
+                    </button>
+                    <button
+                      type="button"
+                      onClick={scrollToConsole}
+                      className="action-button quick-action-btn btn-console"
+                      style={{
+                        background: '#8b5cf6',
+                        color: '#fff',
+                        border: 'none',
+                        cursor: 'pointer',
+                        borderRadius: '4px',
+                        padding: '8px 16px',
+                      }}
+                    >
+                      🔄 Recarregar Resources
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={scrollToConsole}
+                      className="action-button quick-action-btn btn-console"
+                    >
+                      Ver Console
+                    </button>
+                    <LoadingButton
+                      loading={false}
+                      onClick={handleSendCommand}
+                      className="action-button quick-action-btn btn-command"
+                    >
+                      Enviar Comando
+                    </LoadingButton>
+                  </>
+                )}
                 <LoadingButton
                   loading={false}
                   onClick={handleBackup}

@@ -2340,3 +2340,125 @@ body,
 .console-body::-webkit-scrollbar-thumb:hover {
   background: rgba(59, 130, 246, 0.6);
 }
+
+/* =========================================================
+   FiveM CONSOLE STYLING
+   ========================================================= */
+
+.server-console[data-engine="fivem"] .console-header {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(168, 85, 247, 0.1));
+  border-color: rgba(168, 85, 247, 0.3);
+}
+
+.server-console[data-engine="fivem"] .console-body {
+  background: #0f0a1a;
+}
+
+.server-console[data-engine="fivem"] .console-body.console-fivem {
+  background: linear-gradient(135deg, rgba(20, 10, 35, 0.98), rgba(15, 8, 30, 0.98));
+}
+
+.server-console[data-engine="fivem"] .console-line {
+  font-weight: 500;
+}
+
+/* FiveM Color Scheme */
+.server-console[data-engine="fivem"] .console-error .console-content {
+  color: #ff4545;
+  text-shadow: 0 0 8px rgba(255, 69, 69, 0.3);
+}
+
+.server-console[data-engine="fivem"] .fivem-error .console-content {
+  color: #ff4545;
+  text-shadow: 0 0 8px rgba(255, 69, 69, 0.3);
+  font-weight: 600;
+}
+
+.server-console[data-engine="fivem"] .console-warning .console-content {
+  color: #ffd700;
+  text-shadow: 0 0 8px rgba(255, 215, 0, 0.3);
+}
+
+.server-console[data-engine="fivem"] .fivem-warning .console-content {
+  color: #ffd700;
+  text-shadow: 0 0 8px rgba(255, 215, 0, 0.3);
+}
+
+.server-console[data-engine="fivem"] .console-info .console-content {
+  color: #00ff00;
+  text-shadow: 0 0 8px rgba(0, 255, 0, 0.3);
+}
+
+.server-console[data-engine="fivem"] .fivem-info .console-content {
+  color: #00ff00;
+  text-shadow: 0 0 8px rgba(0, 255, 0, 0.3);
+}
+
+.server-console[data-engine="fivem"] .console-debug .console-content {
+  color: #0088ff;
+  text-shadow: 0 0 8px rgba(0, 136, 255, 0.3);
+}
+
+.server-console[data-engine="fivem"] .fivem-debug .console-content {
+  color: #0088ff;
+  text-shadow: 0 0 8px rgba(0, 136, 255, 0.3);
+}
+
+.server-console[data-engine="fivem"] .console-default .console-content {
+  color: #cccccc;
+}
+
+/* FiveM Badge Styling */
+.server-console[data-engine="fivem"] .fivem-badge {
+  background: rgba(168, 85, 247, 0.15);
+  border-color: rgba(168, 85, 247, 0.3);
+  color: #e9d5ff;
+}
+
+.server-console[data-engine="fivem"] .fivem-badge .live-dot {
+  background: #a855f7;
+}
+
+/* FiveM Scrollbar */
+.server-console[data-engine="fivem"] .console-body::-webkit-scrollbar-thumb {
+  background: rgba(168, 85, 247, 0.35);
+}
+
+.server-console[data-engine="fivem"] .console-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(168, 85, 247, 0.6);
+}
+
+/* FiveM Console Border */
+.server-console[data-engine="fivem"] .console-body::before {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.15), rgba(147, 51, 234, 0.15));
+}
+
+/* =========================================================
+   SERVER SELECTOR
+   ========================================================= */
+
+select[style*="background: rgba(15, 23, 42, 0.9)"] {
+  font-family: Inter, sans-serif;
+  min-width: 220px;
+}
+
+select[style*="background: rgba(15, 23, 42, 0.9)"]:focus {
+  outline: none;
+  border-color: rgba(59, 130, 246, 0.8) !important;
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.25) !important;
+}
+
+select[style*="background: rgba(15, 23, 42, 0.9)"] option {
+  background: rgba(15, 23, 42, 0.95);
+  color: #e2e8f0;
+  padding: 8px 12px;
+}
+
+select[style*="background: rgba(15, 23, 42, 0.9)"] option:checked {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  color: #ffffff;
+}
+
+select[style*="background: rgba(15, 23, 42, 0.9)"] option:hover {
+  background: rgba(59, 130, 246, 0.2);
+}

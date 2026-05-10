@@ -116,6 +116,11 @@ class ServerController extends Controller
                 $status = $localServerService->isRunning($server) ? 'online' : 'offline';
             }
 
+            $engine = $server->engine;
+            if (!$engine) {
+                $engine = $this->guessEngine($server);
+            }
+
             $ping = null;
             if ($status === 'online') {
                 $ping = $this->measureServerPing($server->ip, $server->port);
@@ -124,12 +129,23 @@ class ServerController extends Controller
             return array_merge($server->toArray(), [
                 'status' => $status,
                 'ping' => $ping,
+                'engine' => $engine,
                 'plan_name' => $server->plan?->name,
                 'owner_name' => $server->owner?->name,
             ]);
         });
 
         return response()->json($servers);
+    }
+
+    private function guessEngine(Server $server): string
+    {
+        $gameMode = strtolower($server->game_mode ?? '');
+        if (str_contains($gameMode, 'fivem') || $server->port === 30120) {
+            return 'fivem';
+        }
+
+        return 'samp';
     }
 
     private function measureServerPing(string $ip, int $port, int $timeout = 2): ?int
@@ -420,6 +436,7 @@ class ServerController extends Controller
             'port' => 'required|integer',
             'password' => 'nullable|string',
             'type' => 'required|in:local,ssh',
+            'engine' => 'nullable|in:samp,fivem',
             'folder' => 'nullable|string',
             'owner_id' => 'nullable|integer',
             'limit_ram' => 'nullable|integer',
@@ -443,6 +460,7 @@ class ServerController extends Controller
             'port' => $data['port'],
             'password' => $data['password'] ?? null,
             'type' => $data['type'],
+            'engine' => $data['engine'] ?? 'samp',
             'status' => 'offline',
             'folder' => $folder,
             'owner_id' => $data['owner_id'] ?? null,
@@ -470,6 +488,7 @@ class ServerController extends Controller
             'port' => 'sometimes|required|integer',
             'password' => 'nullable|string',
             'type' => 'sometimes|required|in:local,ssh',
+            'engine' => 'nullable|in:samp,fivem',
             'folder' => 'nullable|string',
             'owner_id' => 'nullable|integer',
             'plan_id' => 'nullable|integer',
@@ -501,6 +520,9 @@ class ServerController extends Controller
         }
         if ($request->has('type')) {
             $server->type = $data['type'];
+        }
+        if ($request->has('engine')) {
+            $server->engine = $data['engine'] ?? 'samp';
         }
         if ($request->has('folder')) {
             $folder = $this->normalizeFolderPath($data['folder'] ?? null);

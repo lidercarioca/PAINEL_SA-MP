@@ -15,6 +15,7 @@ class Server extends Model
         'port',
         'password',
         'type',
+        'engine',
         'status',
         'folder',
         'owner_id',
