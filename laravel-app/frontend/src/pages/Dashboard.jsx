@@ -49,11 +49,11 @@ const getStatusLabel = (status, ping = null) => {
 // Função para obter servidores acessíveis ao usuário
 const getAccessibleServers = (servers, user) => {
   if (!user) return [];
-  if (user.role === 'admin') {
+  if (user.role === 'admin' || user.role === 'administrador') {
     return servers;
   }
   // Clientes só veem seus próprios servidores
-  return servers.filter(server => server.owner_id === user.id);
+  return servers.filter(server => Number(server.owner_id) === Number(user.id));
 };
 
 const Dashboard = () => {
@@ -132,39 +132,36 @@ const Dashboard = () => {
 
   // Sincronizar activeServer quando servers mudam
   useEffect(() => {
-  if (servers.length === 0) {
-    setActiveServer(null);
-    return;
-  }
-
-  const filtered = getAccessibleServers(servers, user);
-
-  if (activeServerId) {
-    const savedServer = filtered.find(
-      (s) => String(s.id) === String(activeServerId)
-    );
-
-    if (savedServer) {
-      setActiveServerState(savedServer);
+    if (servers.length === 0) {
+      setActiveServerState(null);
       return;
     }
-  }
 
-  if (!activeServer && filtered.length > 0) {
-    setActiveServer(filtered[0]);
-  }
-}, [servers, user, activeServerId, activeServer]);
+    const filtered = getAccessibleServers(servers, user);
+
+    if (activeServerId) {
+      const selected = filtered.find(
+        (s) => String(s.id) === String(activeServerId)
+      );
+
+      if (selected) {
+        setActiveServerState(selected);
+        return;
+      }
+    }
+
+    if (!activeServerId && filtered.length > 0) {
+      const first = filtered[0];
+      setActiveServerId(String(first.id));
+      localStorage.setItem('activeServerId', String(first.id));
+      setActiveServerState(first);
+    }
+  }, [servers, user, activeServerId]);
 
   const loadServers = async () => {
     try {
       const { data } = await fetchServers();
       setServers(data);
-      if (activeServerId) {
-        const updatedActive = data.find((s) => String(s.id) === String(activeServerId));
-        if (updatedActive) {
-          setActiveServer(updatedActive);
-        }
-      }
     } catch (error) {
       const message = getApiErrorMessage(error);
       if (error.response?.status === 401) {
@@ -188,7 +185,7 @@ const Dashboard = () => {
       try {
         const parsed = JSON.parse(authUser);
         setUser(parsed);
-        if (parsed.role === 'admin') {
+        if (parsed.role === 'admin' || parsed.role === 'administrador') {
           loadClients();
           loadPlans();
         }
@@ -303,7 +300,8 @@ const Dashboard = () => {
   const loadClients = async () => {
     try {
       const { data } = await fetchUsers();
-      setClients(data.filter((item) => item.role === 'client'));
+      const clientRoles = ['client', 'cliente'];
+      setClients(data.filter((item) => clientRoles.includes(String(item.role).toLowerCase())));
     } catch (error) {
       console.warn('Falha ao carregar clientes:', error);
     }
@@ -902,11 +900,16 @@ const Dashboard = () => {
                 {getAccessibleServers(servers, user).length > 0 && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <select
-                      value={activeServer?.id || ''}
+                      value={activeServerId || ''}
                       onChange={(e) => {
-                        const server = servers.find(s => s.id == e.target.value);
+                        const selectedId = String(e.target.value);
+                        const server = servers.find(s => String(s.id) === selectedId);
+
+                        setActiveServerId(selectedId);
+                        localStorage.setItem('activeServerId', selectedId);
+
                         if (server) {
-                          setActiveServer(server);
+                          setActiveServerState(server);
                         }
                       }}
                       style={{
@@ -1273,7 +1276,7 @@ const Dashboard = () => {
                 >
                   {activeServerIsFiveM ? 'Parar FXServer' : 'Parar'}
                 </LoadingButton>
-                {user?.role === 'admin' && (
+                {user?.role === 'admin' || user?.role === 'administrador' && (
                   <LoadingButton
                     loading={isActionLoading(activeServer.id, 'suspend')}
                     onClick={() => handleAction(activeServer.id, 'suspend')}
@@ -1313,6 +1316,21 @@ const Dashboard = () => {
                       }}
                     >
                       🔄 Recarregar Resources
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/resources?server_id=${activeServer.id}`)}
+                      className="action-button quick-action-btn btn-resources"
+                      style={{
+                        background: '#06b6d4',
+                        color: '#fff',
+                        border: 'none',
+                        cursor: 'pointer',
+                        borderRadius: '4px',
+                        padding: '8px 16px',
+                      }}
+                    >
+                      📦 Gerenciar Resources
                     </button>
                   </>
                 ) : (

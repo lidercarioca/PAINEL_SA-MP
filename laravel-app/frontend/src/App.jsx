@@ -25,6 +25,7 @@ import Security from './pages/Security';
 import Finance from './pages/Finance';
 import Servers from './pages/Servers';
 import Backups from './pages/Backups';
+import Resources from './pages/Resources';
 import CreateServer from './pages/CreateServer';
 import PlaceholderPage from './pages/PlaceholderPage';
 import { logout, getApiErrorMessage } from './services/api';
@@ -86,6 +87,10 @@ const router = createBrowserRouter(
         {
           path: 'backups',
           element: <Backups />,
+        },
+        {
+          path: 'resources',
+          element: <Resources />,
         },
         {
           path: 'scheduler',

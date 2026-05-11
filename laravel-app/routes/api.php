@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ServerController;
 use App\Http\Controllers\Api\RconController;
 use App\Http\Controllers\Api\ResourceController;
+use App\Http\Controllers\Api\FiveMResourceController;
 use App\Http\Controllers\Api\LogController;
 use App\Http\Controllers\Api\FileController;
 use App\Http\Controllers\Api\UserController;
@@ -49,6 +50,8 @@ Route::middleware('api.token')->group(function () {
     Route::get('/servers/{serverId}/players', [ServerController::class, 'players']);
     Route::get('/servers/{serverId}/stats', [ServerController::class, 'stats']);
     Route::get('/servers/{serverId}/status', [ServerController::class, 'status']);
+    Route::get('/servers/{serverId}/fivem/resources', [FiveMResourceController::class, 'index']);
+    Route::post('/servers/{serverId}/fivem/resources/action', [FiveMResourceController::class, 'action']);
     Route::get('/servers/{serverId}/console-stream', [LogController::class, 'stream']);
     Route::get('/logs', [LogController::class, 'index']);
     Route::get('/files', [FileController::class, 'index']);
