@@ -19,3 +19,27 @@ yarn-error.log*
 .pestphp
 storage/app/backups/
 storage/app/logs/
+# SQLite local database
+laravel-app/database/database.sqlite
+
+# Laravel storage/logs
+laravel-app/storage/logs/*.log
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Node modules
+node_modules/
+
+# Build files
+dist/
+build/
+
+# VSCode
+.vscode/
+
+# Temporary files
+*.tmp
+*.bak

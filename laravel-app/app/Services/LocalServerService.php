@@ -7,6 +7,8 @@ use App\Services\ActionLogService;
 
 class LocalServerService
 {
+    protected static $folderSizeCache = [];
+
     public function start(Server $server): array
     {
         $rootPath = $this->resolveFolder($server->folder);
@@ -102,7 +104,7 @@ class LocalServerService
 
         try {
             if ($engine === 'fivem') {
-                $existingMainPid = $this->findFiveMMainProcess($rootPath, false);
+                $existingMainPid = $this->findFiveMMainProcess($rootPath, !empty($server->port) ? (int)$server->port : null, false);
                 $existingHttp = $this->isFivemHttpResponsive($server);
 
                 if ($existingMainPid || $existingHttp) {
@@ -353,7 +355,7 @@ class LocalServerService
                 return true;
             }
 
-            $mainPid = $this->findFiveMMainProcess($rootPath, false); // strict mode for status check
+            $mainPid = $this->findFiveMMainProcess($rootPath, !empty($server->port) ? (int)$server->port : null, false); // strict mode for status check
             if ($mainPid) {
                 ActionLogService::append("[FiveM] Server RUNNING: FXServer main PID={$mainPid} found");
                 return true;
@@ -368,14 +370,9 @@ class LocalServerService
             return false;
         }
 
-        $exe = $this->resolveSampExecutable($rootPath);
-        if (!$exe) {
-            return false;
-        }
-
-        $pids = $this->findProcessIds($rootPath, $exe);
-        if (!empty($pids)) {
-            ActionLogService::append("SA-MP Server RUNNING: process {$exe} found");
+        $processInfo = $this->findMainServerProcess($server);
+        if (!empty($processInfo)) {
+            ActionLogService::append("SA-MP Server RUNNING: main process PID={$processInfo['pid']} selected");
             return true;
         }
 
@@ -386,6 +383,175 @@ class LocalServerService
 
         ActionLogService::append("SA-MP Server NOT RUNNING: no process and no port open");
         return false;
+    }
+
+    public function findMainServerProcess(Server $server): ?array
+    {
+        $folder = $this->resolveFolder($server->folder);
+        if (!$folder || !is_dir($folder)) {
+            return null;
+        }
+
+        $engine = strtolower($server->engine ?? 'samp');
+        if ($engine === 'fivem') {
+            return $this->findFiveMMainProcessDetails($folder, !empty($server->port) ? (int)$server->port : null, false);
+        }
+
+        return $this->findSampMainProcessDetails($server, $folder);
+    }
+
+    public function findMainServerProcessDebug(Server $server): array
+    {
+        $folder = $this->resolveFolder($server->folder);
+        $debug = [
+            'process_found' => false,
+            'process' => [
+                'pid' => null,
+                'name' => null,
+                'executable_path' => null,
+                'command_line' => null,
+                'engine' => strtolower($server->engine ?? 'samp'),
+            ],
+            'fallback_reason' => null,
+        ];
+
+        if (!$folder || !is_dir($folder)) {
+            $debug['fallback_reason'] = 'Pasta do servidor inválida ou inacessível.';
+            return $debug;
+        }
+
+        $engine = strtolower($server->engine ?? 'samp');
+        $processInfo = $engine === 'fivem'
+            ? $this->findFiveMMainProcessDetails($folder, !empty($server->port) ? (int)$server->port : null, false)
+            : $this->findSampMainProcessDetails($server, $folder);
+
+        if (!$processInfo) {
+            $debug['fallback_reason'] = $engine === 'fivem'
+                ? 'Nenhum processo FXServer.exe principal encontrado para este FiveM. Verifique o server.cfg, txAdminServerMode ou o caminho do executável.'
+                : 'Nenhum processo SA-MP encontrado dentro da pasta do servidor. Verifique o caminho e a porta configurada.';
+            return $debug;
+        }
+
+        $debug['process_found'] = true;
+        $debug['process'] = [
+            'pid' => $processInfo['pid'],
+            'name' => $processInfo['name'] ?? null,
+            'executable_path' => $processInfo['executable_path'] ?? null,
+            'command_line' => $processInfo['command_line'] ?? null,
+            'engine' => $processInfo['engine'] ?? null,
+        ];
+
+        return $debug;
+    }
+
+    public function calculateFolderSize(string $folder): ?int
+    {
+        return $this->getFolderSize($folder);
+    }
+
+    protected function findSampMainProcessDetails(Server $server, string $folder): ?array
+    {
+        if (!$this->isWindows()) {
+            return null;
+        }
+
+        $knownExecutables = [
+            'samp-server.exe',
+            'samp03svr.exe',
+            'sampsvr.exe',
+            'server.exe',
+        ];
+
+        $port = !empty($server->port) ? (int) $server->port : null;
+        $portOwner = $port ? $this->getPortOwnerInfo($port) : null;
+        $queryParts = array_map(function ($name) {
+            return "name='" . $name . "'";
+        }, $knownExecutables);
+        $query = implode(' or ', $queryParts);
+
+        $output = [];
+        $cmd = 'wmic process where "' . $query . '" get ProcessId,ExecutablePath,CommandLine /FORMAT:CSV';
+        exec($cmd, $output, $status);
+
+        $candidates = [];
+        $allProcesses = [];
+
+        foreach ($output as $line) {
+            $line = trim($line);
+            if ($line === '' || stripos($line, 'ProcessId') !== false || stripos($line, 'CommandLine') !== false || stripos($line, 'ExecutablePath') !== false) {
+                continue;
+            }
+
+            $processInfo = $this->parseWmicProcessCsvLine($line);
+            if (!$processInfo) {
+                continue;
+            }
+
+            $pid = (int) $processInfo['pid'];
+            $commandLine = $processInfo['commandLine'] ?? '';
+            $executablePath = $processInfo['executablePath'] ?? '';
+
+            if ($pid <= 0) {
+                continue;
+            }
+
+            $hasFolder = $this->stringContainsPath($commandLine, $folder) || $this->stringContainsPath($executablePath, $folder);
+            if (!$hasFolder) {
+                continue;
+            }
+
+            $score = 0;
+            $reasons = [];
+            if ($this->stringContainsPath($executablePath, $folder)) {
+                $score += 40;
+                $reasons[] = 'executable_in_folder';
+            }
+            if ($this->stringContainsPath($commandLine, $folder)) {
+                $score += 30;
+                $reasons[] = 'folder_in_commandline';
+            }
+            if ($port !== null && stripos($commandLine, (string) $port) !== false) {
+                $score += 50;
+                $reasons[] = 'port_in_commandline';
+            }
+            if ($portOwner && isset($portOwner['pid']) && $portOwner['pid'] === $pid) {
+                $score += 100;
+                $reasons[] = 'port_owner';
+            }
+
+            $allProcesses[] = "PID={$pid}, ExecutablePath={$executablePath}, CommandLine={$commandLine}";
+            $candidates[] = [
+                'pid' => $pid,
+                'name' => basename($executablePath) ?: 'Unknown',
+                'command_line' => $commandLine,
+                'executable_path' => $executablePath,
+                'score' => $score,
+                'reason' => implode(', ', $reasons),
+            ];
+        }
+
+        ActionLogService::append("SA-MP process scan complete. All processes: " . implode(' | ', $allProcesses));
+        if (empty($candidates)) {
+            return null;
+        }
+
+        usort($candidates, function ($a, $b) {
+            if ($a['score'] === $b['score']) {
+                return $b['pid'] <=> $a['pid'];
+            }
+            return $b['score'] <=> $a['score'];
+        });
+
+        $best = $candidates[0];
+        ActionLogService::append("SA-MP selected main process PID={$best['pid']}, score={$best['score']}, reason={$best['reason']}, commandLine={$best['command_line']}, executablePath={$best['executable_path']}");
+
+        return [
+            'pid' => $best['pid'],
+            'name' => $best['name'],
+            'command_line' => $best['command_line'],
+            'executable_path' => $best['executable_path'],
+            'engine' => 'samp',
+        ];
     }
 
     public function getServerStatus(Server $server): string
@@ -509,40 +675,49 @@ class LocalServerService
     public function getServerProcessMemoryUsage(Server $server): ?array
     {
         if ($server->type !== 'local') {
-            return null;
+            return [
+                'used_bytes' => 0,
+                'used_mb' => 0.0,
+                'label' => '0 MB',
+                'percent' => 0,
+                'total_bytes' => 0,
+                'total_mb' => 0.0,
+                'source' => 'process_not_found',
+            ];
         }
 
-        $engine = strtolower($server->engine ?? 'samp');
-        if ($engine === 'fivem') {
-            return $this->getFiveMServerMemoryUsage($server);
+        $processInfo = $this->findMainServerProcess($server);
+        if (!$processInfo) {
+            return [
+                'used_bytes' => 0,
+                'used_mb' => 0.0,
+                'label' => '0 MB',
+                'percent' => 0,
+                'total_bytes' => 0,
+                'total_mb' => 0.0,
+                'source' => 'process_not_found',
+            ];
         }
 
-        // SA-MP: usar lógica existente
-        $folder = $this->resolveFolder($server->folder);
-        if (!$folder || !is_dir($folder)) {
-            return null;
+        if ($server->pid !== $processInfo['pid']) {
+            $oldPid = $server->pid;
+            $server->update(['pid' => $processInfo['pid']]);
+            ActionLogService::append("PID updated for server {$server->id}: {$oldPid} -> {$processInfo['pid']}");
         }
 
-        $exe = $this->findExecutable($folder, $this->getKnownExecutables());
-        if (!$exe) {
-            return null;
-        }
-
-        $pids = $this->findProcessIds($folder, $exe);
-        if (empty($pids)) {
-            return null;
-        }
-
-        $usedBytes = 0;
-        foreach ($pids as $pid) {
-            $memory = $this->getProcessWorkingSetSize($pid);
-            if ($memory !== null) {
-                $usedBytes += $memory;
-            }
-        }
-
-        if ($usedBytes <= 0) {
-            return null;
+        $pid = $processInfo['pid'];
+        $memoryBytes = $this->getProcessWorkingSetSize($pid);
+        if ($memoryBytes === null || $memoryBytes <= 0) {
+            ActionLogService::append("Memory: failed to get memory for PID={$pid}, server {$server->id}");
+            return [
+                'used_bytes' => 0,
+                'used_mb' => 0.0,
+                'label' => '0 MB',
+                'percent' => 0,
+                'total_bytes' => 0,
+                'total_mb' => 0.0,
+                'source' => 'WorkingSetSize',
+            ];
         }
 
         $memoryLimitBytes = null;
@@ -552,13 +727,21 @@ class LocalServerService
 
         $percent = null;
         if ($memoryLimitBytes !== null && $memoryLimitBytes > 0) {
-            $percent = round(($usedBytes / $memoryLimitBytes) * 100, 1);
+            $percent = round(($memoryBytes / $memoryLimitBytes) * 100, 1);
         }
 
+        $usedMb = round($memoryBytes / 1024 / 1024, 1);
+        $totalMb = $memoryLimitBytes !== null && $memoryLimitBytes > 0 ? round($memoryLimitBytes / 1024 / 1024, 1) : null;
+        ActionLogService::append("Memory: server_id={$server->id}, engine={$server->engine}, pid={$pid}, ram_process={$usedMb}MB");
+
         return [
-            'used' => $usedBytes,
-            'total' => $memoryLimitBytes,
+            'used_bytes' => $memoryBytes,
+            'used_mb' => $usedMb,
+            'label' => $usedMb . ' MB',
             'percent' => $percent,
+            'total_bytes' => $memoryLimitBytes,
+            'total_mb' => $totalMb,
+            'source' => 'WorkingSetSize',
         ];
     }
 
@@ -577,7 +760,7 @@ class LocalServerService
             ActionLogService::append("FiveM RAM: using saved PID={$pid} for server {$server->id}");
         } else {
             // Tentar localizar PID principal
-            $pid = $this->findFiveMMainProcess($folder, false);
+            $pid = $this->findFiveMMainProcess($folder, !empty($server->port) ? (int)$server->port : null, false);
             if ($pid) {
                 // Salvar PID no banco
                 $server->update(['pid' => $pid]);
@@ -615,36 +798,67 @@ class LocalServerService
     public function getServerDiskUsage(Server $server): ?array
     {
         if ($server->type !== 'local') {
-            return null;
+            return [
+                'folder_size_bytes' => 0,
+                'folder_size_mb' => 0.0,
+                'folder_size_gb' => 0.0,
+                'label' => '0 MB',
+                'source' => 'server_folder',
+                'percent' => 0,
+                'total_bytes' => 0,
+            ];
         }
 
-        $engine = strtolower($server->engine ?? 'samp');
-        if ($engine === 'fivem') {
-            return $this->getFiveMServerDiskUsage($server);
-        }
-
-        // SA-MP: usar lógica existente (disco do sistema)
         $folder = $this->resolveFolder($server->folder);
         if (!$folder || !is_dir($folder)) {
-            return null;
+            return [
+                'folder_size_bytes' => 0,
+                'folder_size_mb' => 0.0,
+                'folder_size_gb' => 0.0,
+                'label' => '0 MB',
+                'source' => 'server_folder',
+                'percent' => 0,
+                'total_bytes' => 0,
+            ];
         }
 
-        $total = @disk_total_space($folder);
-        $free = @disk_free_space($folder);
-
-        if ($total === false || $free === false) {
-            return null;
+        $usedBytes = $this->calculateFolderSize($folder);
+        if ($usedBytes === null) {
+            ActionLogService::append("Disk: failed to calculate folder size for {$folder}");
+            return [
+                'folder_size_bytes' => 0,
+                'folder_size_mb' => 0.0,
+                'folder_size_gb' => 0.0,
+                'label' => '0 MB',
+                'source' => 'server_folder',
+                'percent' => 0,
+                'total_bytes' => 0,
+            ];
         }
 
-        $used = $total - $free;
-        $percent = $total > 0 ? round(($used / $total) * 100, 1) : null;
+        $limitBytes = null;
+        if ($server->disk_limit_gb !== null && $server->disk_limit_gb > 0) {
+            $limitBytes = (int) $server->disk_limit_gb * 1024 * 1024 * 1024; // GB to bytes
+        }
+
+        $percent = null;
+        if ($limitBytes !== null && $limitBytes > 0) {
+            $percent = round(($usedBytes / $limitBytes) * 100, 1);
+        }
+
+        $usedMb = round($usedBytes / 1024 / 1024, 1);
+        $usedGb = round($usedBytes / 1024 / 1024 / 1024, 2);
+        $totalMb = $limitBytes !== null && $limitBytes > 0 ? round($limitBytes / 1024 / 1024, 1) : null;
+        ActionLogService::append("Disk: server_id={$server->id}, engine={$server->engine}, folder_used=" . round($usedBytes / 1024 / 1024 / 1024, 2) . "GB, limit=" . ($limitBytes ? round($limitBytes / 1024 / 1024 / 1024, 2) . "GB" : "none") . ", path={$folder}");
 
         return [
-            'total' => $total,
-            'free' => $free,
-            'used' => $used,
+            'folder_size_bytes' => $usedBytes,
+            'folder_size_mb' => $usedMb,
+            'folder_size_gb' => $usedGb,
+            'label' => $usedMb . ' MB',
+            'source' => 'server_folder',
             'percent' => $percent,
-            'path' => $folder,
+            'total_bytes' => $limitBytes,
         ];
     }
 
@@ -685,47 +899,34 @@ class LocalServerService
     public function getServerProcessCpuUsage(Server $server): ?array
     {
         if ($server->type !== 'local') {
-            return null;
+            return ['percent' => 0, 'label' => '0%', 'source' => 'process_not_found'];
         }
 
-        $engine = strtolower($server->engine ?? 'samp');
-        if ($engine === 'fivem') {
-            return $this->getFiveMServerCpuUsage($server);
+        $processInfo = $this->findMainServerProcess($server);
+        if (!$processInfo) {
+            return ['percent' => 0, 'label' => '0%', 'source' => 'process_not_found'];
         }
 
-        // SA-MP: usar lógica existente
-        $folder = $this->resolveFolder($server->folder);
-        if (!$folder || !is_dir($folder)) {
-            return null;
+        if ($server->pid !== $processInfo['pid']) {
+            $oldPid = $server->pid;
+            $server->update(['pid' => $processInfo['pid']]);
+            ActionLogService::append("PID updated for server {$server->id}: {$oldPid} -> {$processInfo['pid']}");
         }
 
-        $exe = $this->findExecutable($folder, $this->getKnownExecutables());
-        if (!$exe) {
-            return null;
+        $pid = $processInfo['pid'];
+        $cpuResult = $this->getProcessCpuPercentWithSource($pid);
+        if ($cpuResult['percent'] === null) {
+            ActionLogService::append("CPU: failed to get CPU for PID={$pid}, server {$server->id}");
+            return ['percent' => 0, 'label' => '0%', 'source' => $cpuResult['source']];
         }
 
-        $pids = $this->findProcessIds($folder, $exe);
-        if (empty($pids)) {
-            return null;
-        }
-
-        $percent = 0.0;
-        $validCount = 0;
-
-        foreach ($pids as $pid) {
-            $value = $this->getProcessCpuPercent($pid);
-            if ($value !== null) {
-                $percent += $value;
-                $validCount++;
-            }
-        }
-
-        if ($validCount === 0) {
-            return null;
-        }
+        $cpuPercent = round($cpuResult['percent'], 1);
+        ActionLogService::append("CPU: server_id={$server->id}, engine={$server->engine}, pid={$pid}, cpu_process={$cpuPercent}% source={$cpuResult['source']}");
 
         return [
-            'percent' => round($percent, 1),
+            'percent' => $cpuPercent,
+            'label' => $cpuPercent . '%',
+            'source' => $cpuResult['source'],
         ];
     }
 
@@ -744,7 +945,7 @@ class LocalServerService
             ActionLogService::append("FiveM CPU: using saved PID={$pid} for server {$server->id}");
         } else {
             // Tentar localizar PID principal
-            $pid = $this->findFiveMMainProcess($folder, false);
+            $pid = $this->findFiveMMainProcess($folder, !empty($server->port) ? (int)$server->port : null, false);
             if ($pid) {
                 // Salvar PID no banco
                 $server->update(['pid' => $pid]);
@@ -767,14 +968,18 @@ class LocalServerService
         ];
     }
 
-    protected function getProcessCpuPercent(int $pid): ?float
+    protected function getProcessCpuPercentWithSource(int $pid): array
     {
         $output = [];
         @exec('wmic path Win32_PerfFormattedData_PerfProc_Process where IDProcess=' . $pid . ' get PercentProcessorTime /value', $output);
 
         foreach ($output as $line) {
             if (preg_match('/^PercentProcessorTime=(\d+(?:\.\d+)?)$/i', trim($line), $matches)) {
-                return (float) $matches[1];
+                $value = (float) $matches[1];
+                return [
+                    'percent' => $this->normalizeWindowsCpuPercent($value),
+                    'source' => 'Win32_PerfFormattedData_PerfProc_Process',
+                ];
             }
         }
 
@@ -782,7 +987,20 @@ class LocalServerService
         @exec('powershell -NoProfile -Command "(Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | Where-Object { $_.IDProcess -eq ' . $pid . ' } | Select-Object -ExpandProperty PercentProcessorTime)"', $output);
         foreach ($output as $line) {
             if (is_numeric(trim($line))) {
-                return (float) trim($line);
+                return [
+                    'percent' => $this->normalizeWindowsCpuPercent((float) trim($line)),
+                    'source' => 'Get-CimInstance',
+                ];
+            }
+        }
+
+        if ($this->isWindows()) {
+            $sample = $this->sampleProcessCpuPercent($pid, 250);
+            if ($sample !== null) {
+                return [
+                    'percent' => $sample,
+                    'source' => 'cpu_time_sample',
+                ];
             }
         }
 
@@ -790,11 +1008,87 @@ class LocalServerService
             $output = [];
             @exec('ps -p ' . $pid . ' -o %cpu=', $output);
             if (!empty($output) && is_numeric(trim($output[0]))) {
-                return (float) trim($output[0]);
+                return [
+                    'percent' => (float) trim($output[0]),
+                    'source' => 'ps_%cpu',
+                ];
             }
         }
 
+        return [
+            'percent' => null,
+            'source' => 'unknown',
+        ];
+    }
+
+    protected function normalizeWindowsCpuPercent(float $value): float
+    {
+        if ($value > 100) {
+            $cores = $this->getLogicalProcessorCount();
+            if ($cores > 1) {
+                return round($value / $cores, 2);
+            }
+        }
+
+        return $value;
+    }
+
+    protected function sampleProcessCpuPercent(int $pid, int $intervalMs = 250): ?float
+    {
+        $startCpu = $this->getProcessCpuTimeSeconds($pid);
+        if ($startCpu === null) {
+            return null;
+        }
+
+        usleep($intervalMs * 1000);
+
+        $endCpu = $this->getProcessCpuTimeSeconds($pid);
+        if ($endCpu === null) {
+            return null;
+        }
+
+        $delta = $endCpu - $startCpu;
+        if ($delta <= 0) {
+            return 0.0;
+        }
+
+        $cores = $this->getLogicalProcessorCount();
+        $cores = max(1, $cores);
+        $percent = ($delta / ($intervalMs / 1000)) / $cores * 100;
+        return round($percent, 2);
+    }
+
+    protected function getProcessCpuTimeSeconds(int $pid): ?float
+    {
+        $output = [];
+        @exec('powershell -NoProfile -Command "(Get-Process -Id ' . $pid . ' -ErrorAction SilentlyContinue).CPU"', $output);
+        if (!empty($output) && is_numeric(trim($output[0]))) {
+            return (float) trim($output[0]);
+        }
+
         return null;
+    }
+
+    protected function getLogicalProcessorCount(): int
+    {
+        if ($this->isWindows()) {
+            $output = [];
+            @exec('wmic cpu get NumberOfLogicalProcessors /value', $output);
+            foreach ($output as $line) {
+                if (preg_match('/^NumberOfLogicalProcessors=(\d+)$/i', trim($line), $matches)) {
+                    return (int) $matches[1];
+                }
+            }
+        }
+
+        if (function_exists('shell_exec')) {
+            $result = trim(shell_exec('nproc 2>/dev/null'));
+            if (is_numeric($result)) {
+                return (int) $result;
+            }
+        }
+
+        return 1;
     }
 
     protected function getProcessWorkingSetSize(int $pid): ?int
@@ -917,7 +1211,13 @@ class LocalServerService
         return false;
     }
 
-    protected function findFiveMMainProcess(string $folder, bool $allowEmptyCommandLine = false): ?int
+    protected function findFiveMMainProcess(string $folder, ?int $port = null, bool $allowEmptyCommandLine = false): ?int
+    {
+        $processInfo = $this->findFiveMMainProcessDetails($folder, $port, $allowEmptyCommandLine);
+        return $processInfo ? $processInfo['pid'] : null;
+    }
+
+    protected function findFiveMMainProcessDetails(string $folder, ?int $port = null, bool $allowEmptyCommandLine = false): ?array
     {
         if (!$this->isWindows()) {
             return null;
@@ -927,9 +1227,9 @@ class LocalServerService
         $cmd = 'wmic process where "name=\'FXServer.exe\'" get ProcessId,ExecutablePath,CommandLine /FORMAT:CSV';
         exec($cmd, $output, $status);
 
-        $ignoredPids = [];
-        $mainPid = null;
         $normalizedFolder = str_replace('\\', '/', strtolower(rtrim($folder, DIRECTORY_SEPARATOR)));
+        $candidates = [];
+        $ignored = [];
         $allProcesses = [];
 
         foreach ($output as $line) {
@@ -943,49 +1243,103 @@ class LocalServerService
                 continue;
             }
 
-            $commandLine = $processInfo['commandLine'];
-            $executablePath = $processInfo['executablePath'];
             $pid = (int) $processInfo['pid'];
+            $commandLine = $processInfo['commandLine'] ?? '';
+            $executablePath = $processInfo['executablePath'] ?? '';
             $allProcesses[] = "PID={$pid}, ExecutablePath={$executablePath}, CommandLine={$commandLine}";
 
-            if (!$commandLine) {
-                ActionLogService::append("FiveM process PID={$pid} has empty CommandLine, ignoring");
-                $ignoredPids[] = $pid;
+            if ($pid <= 0) {
+                continue;
+            }
+
+            $matchesFolder = $this->stringContainsPath($executablePath, $folder) || $this->stringContainsPath($commandLine, $folder);
+            if (!$allowEmptyCommandLine && trim($commandLine) === '' && !$matchesFolder) {
+                $ignored[$pid] = 'empty command line';
                 continue;
             }
 
             if (stripos($commandLine, '-dumpserver') !== false || stripos($commandLine, '-parentpid') !== false) {
-                ActionLogService::append("FiveM dump/parent process PID={$pid}, ignoring: {$commandLine}");
-                $ignoredPids[] = $pid;
+                $ignored[$pid] = 'dumpserver/parentpid';
                 continue;
             }
 
-            if (stripos($commandLine, '+exec') === false) {
-                ActionLogService::append("FiveM process PID={$pid} has no +exec, ignoring: {$commandLine}");
-                $ignoredPids[] = $pid;
+            $hasTxAdmin = stripos($commandLine, 'txAdminServerMode') !== false;
+            $hasExec = stripos($commandLine, '+exec') !== false;
+            $hasConfigFile = stripos($commandLine, 'server.cfg') !== false;
+
+            if (!($hasTxAdmin || $hasExec || $hasConfigFile || $matchesFolder)) {
+                $ignored[$pid] = 'missing txAdminServerMode/+exec/server.cfg or executable inside server folder';
                 continue;
             }
 
-            $normalizedExePath = str_replace('\\', '/', strtolower($executablePath));
-            $exeInFolder = strpos($normalizedExePath, $normalizedFolder) !== false;
-            $hasConfigFile = stripos($commandLine, 'config.cfg') !== false || stripos($commandLine, 'server.cfg') !== false;
+            $score = 0;
+            $reasons = [];
 
-            if ($exeInFolder && $hasConfigFile) {
-                $mainPid = $pid;
-                ActionLogService::append("FiveM main process selected PID={$pid} with ExecutablePath={$executablePath} and CommandLine: {$commandLine}");
-                break;
+            if ($hasTxAdmin) {
+                $score += 100;
+                $reasons[] = 'txAdminServerMode';
+            }
+            if ($hasExec) {
+                $score += 80;
+                $reasons[] = '+exec';
+            }
+            if ($hasConfigFile) {
+                $score += 60;
+                $reasons[] = 'server.cfg';
+            }
+            if ($this->stringContainsPath($executablePath, $folder)) {
+                $score += 40;
+                $reasons[] = 'executable_in_folder';
+            }
+            if ($port !== null && stripos($commandLine, (string) $port) !== false) {
+                $score += 20;
+                $reasons[] = 'port_match';
+            }
+            if ($this->stringContainsPath($commandLine, $folder)) {
+                $score += 20;
+                $reasons[] = 'folder_in_commandline';
             }
 
-            ActionLogService::append("FiveM process PID={$pid} ignored: ExecutablePath={$executablePath}, commandLine={$commandLine}");
-            $ignoredPids[] = $pid;
+            $candidates[] = [
+                'pid' => $pid,
+                'name' => 'FXServer.exe',
+                'command_line' => $commandLine,
+                'executable_path' => $executablePath,
+                'score' => $score,
+                'reason' => implode(', ', $reasons),
+            ];
         }
 
         ActionLogService::append("FiveM process scan complete. All processes: " . implode(' | ', $allProcesses));
-        if (!$mainPid && !empty($ignoredPids)) {
-            ActionLogService::append("FiveM main process not found. Ignored PIDs: " . implode(', ', $ignoredPids));
+
+        if (empty($candidates)) {
+            if (!empty($ignored)) {
+                $ignoredLines = [];
+                foreach ($ignored as $pid => $reason) {
+                    $ignoredLines[] = "PID={$pid}: {$reason}";
+                }
+                ActionLogService::append("FiveM ignored processes: " . implode(' | ', $ignoredLines));
+            }
+            return null;
         }
 
-        return $mainPid;
+        usort($candidates, function ($a, $b) {
+            if ($a['score'] === $b['score']) {
+                return $b['pid'] <=> $a['pid'];
+            }
+            return $b['score'] <=> $a['score'];
+        });
+
+        $best = $candidates[0];
+        ActionLogService::append("FiveM selected main process PID={$best['pid']}, score={$best['score']}, reason={$best['reason']}, commandLine={$best['command_line']}, executablePath={$best['executable_path']}");
+
+        return [
+            'pid' => $best['pid'],
+            'name' => $best['name'],
+            'command_line' => $best['command_line'],
+            'executable_path' => $best['executable_path'],
+            'engine' => 'fivem',
+        ];
     }
     public function stop(Server $server): array
     {
@@ -1013,7 +1367,7 @@ class LocalServerService
             }
 
             // Step 2: Kill main FXServer process
-            $mainPid = $this->findFiveMMainProcess($folder, false); // false = strict mode for stop
+            $mainPid = $this->findFiveMMainProcess($folder, !empty($server->port) ? (int)$server->port : null, false); // false = strict mode for stop
             if ($mainPid) {
                 $pids[] = $mainPid;
                 ActionLogService::append("FiveM stop: Killing main FXServer PID={$mainPid}");
@@ -1082,7 +1436,7 @@ class LocalServerService
 
             if ($engine === 'fivem') {
                 // For FiveM, comprehensive checks with different logic based on server state
-                $remaining = $this->findFiveMMainProcess($folder, false); // false = strict mode for stop
+                $remaining = $this->findFiveMMainProcess($folder, !empty($server->port) ? (int)$server->port : null, false); // false = strict mode for stop
                 $portStillInUse = !empty($server->port) && $this->isPortInUse((int) $server->port);
                 $httpStillResponsive = $this->isFivemHttpResponsive($server);
 
@@ -1270,7 +1624,7 @@ class LocalServerService
             $portFree = !$this->isPortInUse($port);
 
             // Check if FiveM main process is gone
-            $mainPid = $this->findFiveMMainProcess($folder, false);
+            $mainPid = $this->findFiveMMainProcess($folder, $port, false);
 
             ActionLogService::append("[FiveM Wait] Port free: " . ($portFree ? 'yes' : 'no') . ", MainPID: " . ($mainPid ? $mainPid : 'null') . " (elapsed: {$elapsedTime}ms)");
 
@@ -1290,7 +1644,7 @@ class LocalServerService
 
         // Timeout reached, check final status
         $portStillInUse = $this->isPortInUse($port);
-        $processStillRunning = $this->findFiveMMainProcess($folder, false) !== null;
+        $processStillRunning = $this->findFiveMMainProcess($folder, $port, false) !== null;
 
         if ($portStillInUse) {
             ActionLogService::append("[FiveM Wait] TIMEOUT: Port still in use after {$maxWaitTime}ms");
@@ -1433,7 +1787,7 @@ class LocalServerService
             $httpInfo = $httpStatus['infoJson'];
             $httpPlayers = $httpStatus['playersJson'];
             $portOpen = !empty($port) && $this->isPortInUse($port);
-            $mainPid = $this->findFiveMMainProcess($rootPath, true);
+            $mainPid = $this->findFiveMMainProcess($rootPath, $port, true);
 
             // Verificar se cmd.exe /c run.bat está rodando
             $cmdProcessRunning = false;
@@ -1470,7 +1824,7 @@ class LocalServerService
         }
 
         $portOpen = !empty($port) && $this->isPortInUse($port);
-        $mainPid = $this->findFiveMMainProcess($rootPath, true);
+        $mainPid = $this->findFiveMMainProcess($rootPath, $port, true);
         $httpStatus = $this->getFivemHttpStatus($port);
         $httpInfo = $httpStatus['infoJson'];
         $httpPlayers = $httpStatus['playersJson'];
@@ -2032,28 +2386,270 @@ class LocalServerService
 
     protected function getFolderSize(string $folder): ?int
     {
+        $folderKey = rtrim($folder, DIRECTORY_SEPARATOR);
+        if (isset(self::$folderSizeCache[$folderKey])) {
+            return self::$folderSizeCache[$folderKey];
+        }
+
         if (!$this->isWindows()) {
             // Linux/Mac: usar du
             $output = [];
             $cmd = 'du -sb "' . str_replace('"', '\\"', $folder) . '" 2>/dev/null';
             exec($cmd, $output);
             if (!empty($output) && preg_match('/^(\d+)/', $output[0], $matches)) {
-                return (int) $matches[1];
+                self::$folderSizeCache[$folderKey] = (int) $matches[1];
+                return self::$folderSizeCache[$folderKey];
             }
             return null;
         }
 
-        // Windows: usar PowerShell para calcular tamanho da pasta
         $output = [];
         $escapedFolder = str_replace("'", "''", $folder);
-        $cmd = "powershell -NoProfile -Command \"(Get-ChildItem -Path '$escapedFolder' -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum\"";
+        $ignorePattern = 'cache|tmp|temp|logs|log|crashdumps|crashes|backups|old';
+        $cmd = "powershell -NoProfile -Command \"\$files = Get-ChildItem -Path '$escapedFolder' -Recurse -File -ErrorAction SilentlyContinue | Where-Object { \$_.FullName -notmatch '\\\\(?:$ignorePattern)(?:\\\\|$)' }; if (\$files) { (\$files | Measure-Object -Property Length -Sum).Sum } else { 0 }\"";
         exec($cmd, $output);
 
         if (!empty($output) && is_numeric(trim($output[0]))) {
-            return (int) trim($output[0]);
+            self::$folderSizeCache[$folderKey] = (int) trim($output[0]);
+            return self::$folderSizeCache[$folderKey];
         }
 
         return null;
+    }
+
+    public function createServerBackup(Server $server): string
+    {
+        $folder = $this->resolveFolder($server->folder);
+        if (!$folder || !is_dir($folder)) {
+            throw new \RuntimeException('Pasta do servidor inválida ou inexistente.');
+        }
+
+        if (!is_readable($folder)) {
+            throw new \RuntimeException('Sem permissão de leitura na pasta do servidor.');
+        }
+
+        $engine = strtolower($server->engine ?? 'samp');
+        $timestamp = date('Y-m-d-H-i-s');
+        $backupFolder = storage_path('app' . DIRECTORY_SEPARATOR . 'backups' . DIRECTORY_SEPARATOR . $server->id);
+
+        if (!is_dir($backupFolder) && !mkdir($backupFolder, 0755, true) && !is_dir($backupFolder)) {
+            throw new \RuntimeException('Não foi possível criar a pasta de backup.');
+        }
+
+        if (!is_writable($backupFolder)) {
+            throw new \RuntimeException('Sem permissão de escrita na pasta de backup.');
+        }
+
+        $backupPath = $backupFolder . DIRECTORY_SEPARATOR . sprintf('server-%s-%s-%s.zip', $server->id, $engine, $timestamp);
+
+        $sourceSize = $this->calculateBackupSourceSize($folder);
+        $requiredSpace = max(100 * 1024 * 1024, (int) ceil($sourceSize * 1.2));
+        $freeSpace = @disk_free_space($backupFolder);
+
+        if ($freeSpace === false || $freeSpace < $requiredSpace) {
+            throw new \RuntimeException('Espaço insuficiente em disco para criar o backup.');
+        }
+
+        $stats = [
+            'source_folder' => $folder,
+            'backup_path' => $backupPath,
+            'files_added' => 0,
+            'bytes_added' => 0,
+            'ignored' => [],
+            'errors' => [],
+            'txData_files' => 0,
+            'txData_bytes' => 0,
+            'directories_added' => 0,
+        ];
+
+        ActionLogService::append("Backup start: server_id={$server->id}, source={$folder}, backup_path={$backupPath}, required_space={$requiredSpace}");
+
+        $zip = new \ZipArchive();
+        if ($zip->open($backupPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            throw new \RuntimeException('Não foi possível abrir o arquivo ZIP para escrita.');
+        }
+
+        $this->addFolderToZip($zip, $folder, '', $stats);
+
+        if (!$zip->close()) {
+            throw new \RuntimeException('Falha ao finalizar o arquivo de backup.');
+        }
+
+        if (!$this->validateBackupContents($folder, $stats)) {
+            @unlink($backupPath);
+            throw new \RuntimeException('Backup incompleto: txData não foi incluída completamente.');
+        }
+
+        ActionLogService::append('Backup complete: files_added=' . $stats['files_added'] . ', bytes_added=' . $stats['bytes_added'] . ', directories_added=' . $stats['directories_added'] . ', ignored=' . count($stats['ignored']) . ', errors=' . count($stats['errors']));
+
+        if (!empty($stats['ignored'])) {
+            ActionLogService::append('Backup ignored paths: ' . implode(' | ', array_slice($stats['ignored'], 0, 20)));
+        }
+
+        if (!empty($stats['errors'])) {
+            ActionLogService::append('Backup errors: ' . implode(' | ', array_slice($stats['errors'], 0, 20)));
+        }
+
+        return $backupPath;
+    }
+
+    protected function calculateBackupSourceSize(string $folder): int
+    {
+        $size = 0;
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($folder, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->isDir()) {
+                continue;
+            }
+
+            if ($this->shouldExcludeBackupPath($file->getPathname())) {
+                continue;
+            }
+
+            if ($file->isLink()) {
+                $target = $this->resolveSymlinkTarget($file->getPathname());
+                if ($target && is_file($target)) {
+                    $size += filesize($target) ?: 0;
+                    continue;
+                }
+            }
+
+            $size += $file->getSize();
+        }
+
+        return $size;
+    }
+
+    protected function addFolderToZip(\ZipArchive $zip, string $folderPath, string $zipBasePath, array &$stats): void
+    {
+        $files = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($folderPath, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+
+        foreach ($files as $file) {
+            $pathName = $file->getPathname();
+            if ($this->shouldExcludeBackupPath($pathName)) {
+                $stats['ignored'][] = $pathName;
+                continue;
+            }
+
+            $relativeName = ltrim(str_replace($folderPath, '', $pathName), DIRECTORY_SEPARATOR);
+            $relativeName = str_replace(['\\', '/'], '/', $relativeName);
+            if ($zipBasePath !== '') {
+                $relativeName = trim($zipBasePath . '/' . $relativeName, '/');
+            }
+
+            if ($file->isDir()) {
+                if (!$zip->addEmptyDir($relativeName)) {
+                    $stats['errors'][] = 'Falha ao adicionar diretório vazio: ' . $pathName;
+                } else {
+                    $stats['directories_added']++;
+                }
+                continue;
+            }
+
+            if (!$file->isReadable()) {
+                $stats['errors'][] = 'Arquivo sem permissão de leitura: ' . $pathName;
+                continue;
+            }
+
+            $realPath = $pathName;
+            if ($file->isLink()) {
+                $resolved = $this->resolveSymlinkTarget($pathName);
+                if ($resolved && is_file($resolved)) {
+                    $realPath = $resolved;
+                } else {
+                    $linkTarget = readlink($pathName);
+                    $zip->addFromString($relativeName . '.symlink.txt', 'SYMLINK -> ' . ($linkTarget ?: 'unknown'));
+                    $stats['files_added']++;
+                    continue;
+                }
+            }
+
+            try {
+                if (!$zip->addFile($realPath, $relativeName)) {
+                    $stats['errors'][] = 'Não foi possível adicionar o arquivo ao ZIP: ' . $pathName;
+                    continue;
+                }
+
+                $fileSize = is_file($realPath) ? filesize($realPath) : 0;
+                $stats['files_added']++;
+                $stats['bytes_added'] += $fileSize;
+
+                if (strpos($relativeName, 'txData/') === 0 || strpos($relativeName, 'txData\\') === 0) {
+                    $stats['txData_files']++;
+                    $stats['txData_bytes'] += $fileSize;
+                }
+            } catch (\Throwable $exception) {
+                $stats['errors'][] = 'Erro incluindo arquivo ' . $pathName . ': ' . $exception->getMessage();
+            }
+        }
+    }
+
+    protected function validateBackupContents(string $folder, array $stats): bool
+    {
+        $txDataPath = $folder . DIRECTORY_SEPARATOR . 'txData';
+        if (!is_dir($txDataPath)) {
+            return true;
+        }
+
+        $txDataFileCount = 0;
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($txDataPath, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::SELF_FIRST
+        );
+
+        foreach ($iterator as $file) {
+            if ($file->isFile() && !$this->shouldExcludeBackupPath($file->getPathname())) {
+                $txDataFileCount++;
+            }
+        }
+
+        return $txDataFileCount === 0 || $stats['txData_files'] > 0;
+    }
+
+    protected function resolveSymlinkTarget(string $path): ?string
+    {
+        if (!is_link($path)) {
+            return null;
+        }
+
+        $target = readlink($path);
+        if ($target === false) {
+            return null;
+        }
+
+        if (!preg_match('/^([A-Za-z]:\\|\\\\|\/)/', $target)) {
+            $target = dirname($path) . DIRECTORY_SEPARATOR . $target;
+        }
+
+        return realpath($target) ?: null;
+    }
+
+    protected function shouldExcludeBackupPath(string $path): bool
+    {
+        $normalized = str_replace(['\\', '/'], DIRECTORY_SEPARATOR, $path);
+        $parts = explode(DIRECTORY_SEPARATOR, $normalized);
+        $ignoreDirs = ['.git', 'node_modules', 'backups'];
+        foreach ($parts as $part) {
+            if (in_array(strtolower($part), $ignoreDirs, true)) {
+                return true;
+            }
+        }
+
+        $ignoreExtensions = ['.tmp', '.temp', '.swp', '.swx', '.lock', '.bak'];
+        foreach ($ignoreExtensions as $extension) {
+            if (str_ends_with(strtolower($path), $extension)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function isProcessRunningByPid(int $pid): bool

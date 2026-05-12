@@ -77,6 +77,7 @@ const Dashboard = () => {
   const [serverCpu, setServerCpu] = useState(null);
   const [serverMemory, setServerMemory] = useState(null);
   const [serverDisk, setServerDisk] = useState(null);
+  const [serverStatsDebug, setServerStatsDebug] = useState(null);
   const [serverStatsLoading, setServerStatsLoading] = useState(false);
   const [newServer, setNewServer] = useState({
     name: '',
@@ -109,17 +110,40 @@ const Dashboard = () => {
   const editSectionRef = useRef(null);
   const quickPollIntervalRef = useRef(null);
   const quickPollTimeoutRef = useRef(null);
+  const serverStatsRequestIdRef = useRef(0);
+  const activeServerIdRef = useRef(null);
   const navigate = useNavigate();
 
-  // Wrapper para setActiveServer que persiste no localStorage
+  const logServerSelection = (source, previousServer, nextServer, reason) => {
+    if (process.env.NODE_ENV !== 'development') {
+      return;
+    }
+
+    console.groupCollapsed('[SERVER_SELECTION]');
+    console.log('source:', source);
+    console.log('previousServer:', previousServer);
+    console.log('nextServer:', nextServer);
+    console.log('reason:', reason);
+    console.trace();
+    console.groupEnd();
+  };
+
   const setActiveServer = (server) => {
+    const previousServer = activeServer ? String(activeServer.id) : null;
+    const nextServer = server?.id ? String(server.id) : null;
+
     setActiveServerState(server);
-    const serverId = server?.id ? String(server.id) : null;
-    setActiveServerId(serverId);
+    setActiveServerId(nextServer);
+    activeServerIdRef.current = nextServer;
+
     if (server) {
-      localStorage.setItem('activeServerId', serverId);
+      localStorage.setItem('activeServerId', nextServer);
     } else {
       localStorage.removeItem('activeServerId');
+    }
+
+    if (previousServer !== nextServer) {
+      logServerSelection('setActiveServer', previousServer, nextServer, 'explicit selection or reset');
     }
   };
 
@@ -128,6 +152,7 @@ const Dashboard = () => {
     const savedServerId = localStorage.getItem('activeServerId');
     if (savedServerId) {
       setActiveServerId(savedServerId);
+      activeServerIdRef.current = savedServerId;
     }
   }, []);
 
@@ -153,9 +178,8 @@ const Dashboard = () => {
 
     if (!activeServerId && filtered.length > 0) {
       const first = filtered[0];
-      setActiveServerId(String(first.id));
-      localStorage.setItem('activeServerId', String(first.id));
-      setActiveServerState(first);
+      setActiveServer(first);
+      logServerSelection('serverSync', null, String(first.id), 'initial active server selection');
     }
   }, [servers, user, activeServerId]);
 
@@ -205,6 +229,10 @@ const Dashboard = () => {
     }, 5000);
 
     return () => clearInterval(interval);
+  }, [activeServerId]);
+
+  useEffect(() => {
+    activeServerIdRef.current = activeServerId;
   }, [activeServerId]);
 
   useEffect(() => {
@@ -358,24 +386,48 @@ const Dashboard = () => {
       setServerCpu(null);
       setServerMemory(null);
       setServerDisk(null);
+      setServerStatsDebug(null);
       setServerStatsLoading(false);
       return;
     }
 
+    const requestId = ++serverStatsRequestIdRef.current;
     setServerStatsLoading(true);
     try {
-      const { data } = await fetchServerStats(serverId);
-      setServerFps(data.fps ?? null);
-      setServerCpu(data.cpu ?? null);
-      setServerMemory(data.memory ?? null);
-      setServerDisk(data.disk ?? null);
+      console.log("[STATS FETCH START]", serverId, `/servers/${serverId}/stats`);
+      const response = await fetchServerStats(serverId);
+      console.log("[STATS RAW RESPONSE]", response);
+      const payload = response?.data?.data ?? response?.data ?? response;
+      console.log("[STATS NORMALIZED PAYLOAD]", payload);
+
+      if (requestId !== serverStatsRequestIdRef.current || String(serverId) !== String(activeServerIdRef.current)) {
+        console.warn("[STATS IGNORED - STALE OR SERVER CHANGED]", serverId, activeServerIdRef.current, requestId, serverStatsRequestIdRef.current);
+        return;
+      }
+
+      setServerFps(payload.fps ?? null);
+      setServerCpu(payload.cpu ?? null);
+      setServerMemory(payload.memory ?? null);
+      setServerDisk(payload.disk ?? null);
+      setServerStatsDebug(payload.debug ?? null);
+
+      if (process.env.NODE_ENV === 'development') {
+        const selectedServerId = activeServerId || serverId;
+        console.groupCollapsed('[METRICS DEBUG] Server Stats');
+        console.log('serverId:', selectedServerId);
+        console.log('source:', payload.debug);
+        console.log('cpu:', payload.cpu);
+        console.log('memory:', payload.memory);
+        console.log('disk:', payload.disk);
+        console.groupEnd();
+      }
 
       // Atualizar histórico de métricas
       setMetricsHistory((prev) => {
         const newEntry = {
           timestamp: new Date(),
-          cpu: data.cpu?.percent ?? null,
-          memory: data.memory?.percent ?? null,
+          cpu: payload.cpu?.percent ?? null,
+          memory: payload.memory?.percent ?? null,
           ping: activeServer?.ping ?? null,
         };
         // Manter apenas os últimos 60 pontos (10 minutos com atualizações a cada 5s)
@@ -384,12 +436,17 @@ const Dashboard = () => {
       });
     } catch (error) {
       console.warn('Erro ao carregar estatísticas do servidor:', error);
-      setServerFps(null);
-      setServerCpu(null);
-      setServerMemory(null);
-      setServerDisk(null);
+      if (requestId === serverStatsRequestIdRef.current) {
+        setServerFps(null);
+        setServerCpu(null);
+        setServerMemory(null);
+        setServerDisk(null);
+        setServerStatsDebug(null);
+      }
     } finally {
-      setServerStatsLoading(false);
+      if (requestId === serverStatsRequestIdRef.current) {
+        setServerStatsLoading(false);
+      }
     }
   };
 
@@ -417,6 +474,11 @@ const Dashboard = () => {
       if (!pollingActive) return;
 
       try {
+        if (serverId !== activeServerIdRef.current) {
+          stopPolling();
+          return;
+        }
+
         const { data } = await refreshServerStatus(serverId);
 
         if (activeServer && Number(activeServer.id) === Number(serverId)) {
@@ -425,7 +487,7 @@ const Dashboard = () => {
             status: data.status,
             ping: data.ping,
           };
-          setActiveServer(updatedServer);
+          setActiveServerState(updatedServer);
         }
 
         setServers(prev => prev.map(s =>
@@ -434,10 +496,6 @@ const Dashboard = () => {
             : s
         ));
 
-        if (data.cpu !== undefined) setServerCpu(data.cpu);
-        if (data.memory !== undefined) setServerMemory(data.memory);
-        if (data.disk !== undefined) setServerDisk(data.disk);
-
         if (data.status === 'online') {
           stopPolling();
           return;
@@ -445,7 +503,7 @@ const Dashboard = () => {
 
         if (elapsed >= durationMs && data.status === 'offline') {
           if (activeServer && Number(activeServer.id) === Number(serverId)) {
-            setActiveServer({
+            setActiveServerState({
               ...activeServer,
               status: 'offline',
               ping: null,
@@ -489,7 +547,7 @@ const Dashboard = () => {
         if (data?.success) {
           setMessage(data.message || 'Servidor iniciado com sucesso.');
           if (activeServer && Number(activeServer.id) === Number(serverId)) {
-            setActiveServer({ ...activeServer, status: 'starting', ping: null });
+            setActiveServerState({ ...activeServer, status: 'starting', ping: null });
             setServers(prev => prev.map(s =>
               Number(s.id) === Number(serverId)
                 ? { ...s, status: 'starting', ping: null }
@@ -506,7 +564,7 @@ const Dashboard = () => {
         const { data } = await stopServer(serverId);
         setMessage(data?.message || 'Comando stop enviado.');
         if (activeServer && Number(activeServer.id) === Number(serverId)) {
-          setActiveServer({ ...activeServer, status: 'stopping' });
+          setActiveServerState({ ...activeServer, status: 'stopping' });
           setServers(prev => prev.map(s =>
             Number(s.id) === Number(serverId)
               ? { ...s, status: 'stopping' }
@@ -528,7 +586,7 @@ const Dashboard = () => {
         setMessage('Comando suspend enviado.');
         // Atualizar estado local imediatamente
         if (activeServer && Number(activeServer.id) === Number(serverId)) {
-          setActiveServer({ ...activeServer, status: 'offline' });
+          setActiveServerState({ ...activeServer, status: 'offline' });
         }
         // Iniciar polling rápido por 5 segundos
         startQuickPolling(serverId, 5000);
@@ -855,18 +913,22 @@ const Dashboard = () => {
   const serverOwnerName = activeServer
     ? clients.find((client) => client.id === activeServer.owner_id)?.name || activeServer.owner_name || ''
     : '';
+  const selectedServerId = activeServer?.id ?? activeServerId;
+  const isDevelopment = process.env.NODE_ENV === 'development';
 
-  const cpuPercent = serverCpu?.percent ?? resources?.cpu?.percent ?? resources?.cpu?.load_percentage ?? null;
-  const memoryUsed = serverMemory?.used ?? resources?.memory?.used ?? null;
-  const memoryTotal = serverMemory?.total ?? resources?.memory?.total ?? null;
-  const memoryPercent = serverMemory?.percent ?? resources?.memory?.percent ?? null;
-  const diskUsed = serverDisk?.used ?? resources?.disk?.used ?? null;
-  const diskTotal = serverDisk?.total ?? resources?.disk?.total ?? null;
-  const diskPercent = serverDisk?.percent ?? resources?.disk?.percent ?? null;
+  const cpuPercent = serverCpu?.percent ?? null;
+  const memoryUsedBytes = serverMemory?.used_bytes ?? null;
+  const memoryTotalBytes = serverMemory?.total_bytes ?? null;
+  const memoryPercent = serverMemory?.percent ?? null;
+  const memoryLabel = serverMemory?.label ?? null;
+  const diskUsedBytes = serverDisk?.folder_size_bytes ?? null;
+  const diskTotalBytes = serverDisk?.total_bytes ?? null;
+  const diskPercent = serverDisk?.percent ?? null;
+  const diskLabel = serverDisk?.label ?? null;
 
   const cpuDisplay = cpuPercent != null ? `${cpuPercent}%` : '—';
-  const memoryDisplay = memoryPercent != null ? `${memoryPercent}%` : memoryUsed != null ? `${formatBytes(memoryUsed)}` : '—';
-  const diskDisplay = diskPercent != null ? `${diskPercent}%` : '—';
+  const memoryDisplay = memoryPercent != null ? `${memoryPercent}%` : memoryLabel ?? 'Sem dados';
+  const diskDisplay = diskPercent != null ? `${diskPercent}%` : diskLabel ?? 'Sem dados';
   const playersRows = players;
   const serverUptime = activeServer?.uptime || activeServer?.running_time || '—';
 
@@ -920,11 +982,12 @@ const Dashboard = () => {
                         const selectedId = String(e.target.value);
                         const server = servers.find(s => String(s.id) === selectedId);
 
-                        setActiveServerId(selectedId);
-                        localStorage.setItem('activeServerId', selectedId);
-
                         if (server) {
-                          setActiveServerState(server);
+                          setActiveServer(server);
+                        } else {
+                          setActiveServerId(selectedId);
+                          activeServerIdRef.current = selectedId;
+                          localStorage.setItem('activeServerId', selectedId);
                         }
                       }}
                       style={{
@@ -1042,7 +1105,11 @@ const Dashboard = () => {
               </div>
             </div>
           </div>
-          <p className="card-note">{memoryUsed != null ? `${formatBytes(memoryUsed)} / ${formatBytes(memoryTotal)}` : 'Sem dados'}</p>
+          <p className="card-note">
+            {memoryUsedBytes != null
+              ? `${formatBytes(memoryUsedBytes)}${memoryTotalBytes != null && memoryTotalBytes > 0 ? ` / ${formatBytes(memoryTotalBytes)}` : ''}`
+              : 'Sem dados'}
+          </p>
         </div>
 
         <div className="card metric-card">
@@ -1057,8 +1124,25 @@ const Dashboard = () => {
               </div>
             </div>
           </div>
-          <p className="card-note">{diskUsed != null ? `${formatBytes(diskUsed)} / ${formatBytes(diskTotal)}` : 'Sem dados'}</p>
+          <p className="card-note">
+            {diskUsedBytes != null
+              ? `${formatBytes(diskUsedBytes)}${diskTotalBytes != null && diskTotalBytes > 0 ? ` / ${formatBytes(diskTotalBytes)}` : ''}`
+              : 'Sem dados'}
+          </p>
         </div>
+
+        {isDevelopment && serverStatsDebug && (
+          <div className="card metric-card debug-card">
+            <div className="card-title">Debug Metrics</div>
+            <div className="debug-details">
+              <div><strong>PID:</strong> {serverStatsDebug?.process?.pid ?? '—'}</div>
+              <div><strong>engine:</strong> {serverStatsDebug?.process?.engine ?? '—'}</div>
+              <div><strong>disk_source:</strong> {serverStatsDebug?.disk_source ?? '—'}</div>
+              <div><strong>server_folder:</strong> {serverStatsDebug?.server_folder ?? '—'}</div>
+            </div>
+            <p className="card-note">Informações de debug do fetch /servers/{selectedServerId}/stats</p>
+          </div>
+        )}
 
         <div className="card metric-card">
           <div className="card-title">Ping</div>

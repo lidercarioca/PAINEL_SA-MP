@@ -468,7 +468,7 @@ class ServerController extends Controller
         ]);
     }
 
-    public function createBackup(int $serverId)
+    public function createBackup(int $serverId, LocalServerService $localServerService)
     {
         $server = $this->findServer($serverId);
         if (!$server) {
@@ -477,48 +477,24 @@ class ServerController extends Controller
 
         $this->authorizeAdminOrOwner(request(), $server);
 
-        $folder = $this->normalizeFolderPath($server->folder);
-        if (!$folder || !is_dir($folder)) {
-            return response()->json(['success' => false, 'message' => 'Pasta do servidor inválida'], 400);
+        try {
+            $backupPath = $localServerService->createServerBackup($server);
+            $backupName = basename($backupPath);
+            $size = $this->formatBytes(filesize($backupPath));
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Backup criado com sucesso',
+                'file' => $backupName,
+                'size' => $size,
+            ]);
+        } catch (\Throwable $exception) {
+            ActionLogService::append('Backup failed: server_id=' . $server->id . ', error=' . $exception->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Falha ao criar backup: ' . $exception->getMessage(),
+            ], 500);
         }
-
-        $engine = strtolower($server->engine ?? $this->guessEngine($server));
-        $timestamp = date('Y-m-d-H-i-s');
-        $backupName = sprintf('server-%s-%s-%s.zip', $server->id, $engine, $timestamp);
-        $backupFolder = $this->getBackupFolder($server);
-        File::ensureDirectoryExists($backupFolder);
-        $backupPath = $backupFolder . DIRECTORY_SEPARATOR . $backupName;
-
-        $zip = new \ZipArchive();
-        if ($zip->open($backupPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
-            return response()->json(['success' => false, 'message' => 'Não foi possível criar o arquivo de backup'], 500);
-        }
-
-        if ($engine === 'fivem') {
-            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'run.bat', 'run.bat');
-            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'run.cmd', 'run.cmd');
-            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'txData' . DIRECTORY_SEPARATOR . 'default' . DIRECTORY_SEPARATOR . 'server.cfg', 'txData/default/server.cfg');
-            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'zirix-data' . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'config.cfg', 'zirix-data/config/config.cfg');
-            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'resources', 'resources');
-            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'txData' . DIRECTORY_SEPARATOR . 'default' . DIRECTORY_SEPARATOR . 'logs', 'txData/default/logs');
-        } else {
-            $this->addFileIfExists($zip, $folder . DIRECTORY_SEPARATOR . 'server.cfg', 'server.cfg');
-            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'gamemodes', 'gamemodes');
-            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'filterscripts', 'filterscripts');
-            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'scriptfiles', 'scriptfiles');
-            $this->addDirectoryToZip($zip, $folder . DIRECTORY_SEPARATOR . 'plugins', 'plugins');
-        }
-
-        $zip->close();
-
-        $size = $this->formatBytes(filesize($backupPath));
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Backup criado com sucesso',
-            'file' => $backupName,
-            'size' => $size,
-        ]);
     }
 
     public function listBackups(int $serverId)
@@ -675,14 +651,76 @@ class ServerController extends Controller
         $memory = null;
         $disk = null;
         $cpu = null;
+        $debug = [
+            'server_id' => $server->id,
+            'server_folder' => $server->folder,
+            'process_found' => false,
+            'process' => [
+                'pid' => null,
+                'name' => null,
+                'executable_path' => null,
+                'command_line' => null,
+                'engine' => strtolower($server->engine ?? 'samp'),
+            ],
+            'cpu_source' => null,
+            'memory_source' => null,
+            'fallback_reason' => null,
+            'disk_source' => 'server_folder',
+        ];
+
         if ($server->type === 'local') {
+            $processDebug = $localServerService->findMainServerProcessDebug($server);
             $memory = $localServerService->getServerProcessMemoryUsage($server);
             $disk = $localServerService->getServerDiskUsage($server);
             $cpu = $localServerService->getServerProcessCpuUsage($server);
+
+            $debug['process_found'] = $processDebug['process_found'];
+            $debug['process'] = $processDebug['process'];
+            $debug['fallback_reason'] = $processDebug['fallback_reason'];
+            $debug['cpu_source'] = $cpu['source'] ?? null;
+            $debug['memory_source'] = $memory['source'] ?? null;
+
+            if ($debug['process_found'] && $cpu['percent'] === 0 && ($cpu['source'] ?? 'unknown') === 'unknown') {
+                $debug['fallback_reason'] = 'Processo localizado, mas não foi possível extrair métricas de CPU do Windows.';
+            }
+
+            if ($debug['process_found'] && $memory['used_bytes'] === 0 && ($memory['source'] ?? '') === 'WorkingSetSize') {
+                $debug['fallback_reason'] = 'Processo localizado, mas não foi possível extrair o WorkingSetSize do processo.';
+            }
         }
 
+        // Valores padrão quando processo não encontrado
+        $cpu = $cpu ?? ['percent' => 0, 'label' => '0%', 'source' => 'process_not_found'];
+        $memory = $memory ?? [
+            'used_bytes' => 0,
+            'used_mb' => 0.0,
+            'label' => '0 MB',
+            'percent' => 0,
+            'total_bytes' => 0,
+            'total_mb' => 0.0,
+            'source' => 'process_not_found',
+        ];
+        $disk = $disk ?? [
+            'folder_size_bytes' => 0,
+            'folder_size_mb' => 0.0,
+            'folder_size_gb' => 0.0,
+            'label' => '0 MB',
+            'source' => 'server_folder',
+            'percent' => 0,
+            'total_bytes' => 0,
+        ];
+
         if (empty($server->password)) {
-            return response()->json(['fps' => null, 'raw' => null, 'cpu' => $cpu, 'memory' => $memory, 'disk' => $disk, 'message' => 'Senha RCON não configurada']);
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'fps' => null,
+                    'cpu' => $cpu,
+                    'memory' => $memory,
+                    'disk' => $disk,
+                    'debug' => $debug
+                ]
+            ]);
         }
 
         $response = $rconService->sendCommandWithResponse(
@@ -693,12 +731,30 @@ class ServerController extends Controller
         );
 
         if ($response === null) {
-            return response()->json(['fps' => null, 'raw' => null, 'memory' => $memory, 'message' => 'Não foi possível obter estatísticas do servidor']);
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'fps' => null,
+                    'cpu' => $cpu,
+                    'memory' => $memory,
+                    'disk' => $disk,
+                    'debug' => $debug
+                ]
+            ]);
         }
 
         $fps = $this->parseServerFps($response);
 
-        return response()->json(['fps' => $fps, 'raw' => $response, 'cpu' => $cpu, 'memory' => $memory, 'disk' => $disk]);
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'fps' => $fps,
+                'cpu' => $cpu,
+                'memory' => $memory,
+                'disk' => $disk,
+                'debug' => $debug
+            ]
+        ]);
     }
 
     private function parseServerFps(string $response): ?float
@@ -780,8 +836,24 @@ class ServerController extends Controller
         $cpu = null;
         $memory = null;
         $disk = null;
+        $debug = null;
 
         $engine = strtolower($server->engine ?? 'samp');
+
+        if ($server->type === 'local') {
+            $processInfo = $localServerService->findMainServerProcess($server);
+            $debug = [
+                'source' => 'local_status',
+                'process' => $processInfo ? [
+                    'pid' => $processInfo['pid'],
+                    'executable_path' => $processInfo['executable_path'] ?? null,
+                    'command_line' => $processInfo['command_line'] ?? null,
+                    'engine' => $processInfo['engine'] ?? null,
+                ] : null,
+                'server_folder' => $server->folder,
+                'disk_source' => 'folder_size',
+            ];
+        }
 
         if ($status === 'online') {
             $ping = $this->measureServerPingWithServer($server);
@@ -809,6 +881,7 @@ class ServerController extends Controller
             'cpu' => $cpu,
             'memory' => $memory,
             'disk' => $disk,
+            'debug' => $debug,
             'updated_at' => now()->toIso8601String(),
         ]);
     }

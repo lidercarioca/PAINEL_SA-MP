@@ -625,57 +625,108 @@ class FiveMCommandBridge
         @exec('wmic process where "name=\'FXServer.exe\'" get ProcessId,ExecutablePath,CommandLine /FORMAT:CSV', $output);
 
         $normalizedFolder = $this->normalizePath($folder);
+        $candidates = [];
+        $ignored = [];
+        $allProcesses = [];
+
         foreach ($output as $line) {
             $line = trim($line);
             if ($line === '' || stripos($line, 'ProcessId') !== false || stripos($line, 'CommandLine') !== false || stripos($line, 'ExecutablePath') !== false) {
                 continue;
             }
 
-            $parts = array_map('trim', explode(',', $line));
-            if (count($parts) < 4) {
+            $parts = str_getcsv($line);
+            if (count($parts) === 3) {
+                $commandLine = $parts[0] ?? '';
+                $executablePath = $parts[1] ?? '';
+                $pid = (int) ($parts[2] ?? 0);
+            } elseif (count($parts) >= 4) {
+                $commandLine = $parts[1] ?? '';
+                $executablePath = $parts[2] ?? '';
+                $pid = (int) ($parts[3] ?? 0);
+            } else {
                 continue;
             }
-
-            $pid = (int) ($parts[3] ?? 0);
-            $commandLine = $parts[2] ?? '';
-            $executablePath = $parts[1] ?? '';
 
             if ($pid <= 0) {
                 continue;
             }
 
+            $allProcesses[] = "PID={$pid}, ExecutablePath={$executablePath}, CommandLine={$commandLine}";
+
             if (stripos($commandLine, '-dumpserver') !== false || stripos($commandLine, '-parentpid') !== false) {
+                $ignored[$pid] = 'dumpserver/parentpid';
                 continue;
             }
 
-            // Melhorar busca: procurar por pasta no CommandLine, ExecutablePath com artifacts, ou porta do servidor
-            $isMatch = false;
+            $hasTxAdmin = stripos($commandLine, 'txAdminServerMode') !== false;
+            $hasExec = stripos($commandLine, '+exec') !== false;
+            $hasConfig = stripos($commandLine, 'server.cfg') !== false;
 
-            // 1. CommandLine contém a pasta do servidor
-            if (stripos($commandLine, $normalizedFolder) !== false) {
-                $isMatch = true;
-            }
-
-            // 2. ExecutablePath contém "artifacts" (pasta padrão do FXServer)
-            if (!$isMatch && stripos($this->normalizePath($executablePath), 'artifacts') !== false) {
-                $isMatch = true;
-            }
-
-            // 3. CommandLine contém a porta do servidor
-            if (!$isMatch && stripos($commandLine, (string)$this->port) !== false) {
-                $isMatch = true;
-            }
-
-            if (!$isMatch) {
+            if (!($hasTxAdmin || $hasExec || $hasConfig)) {
+                $ignored[$pid] = 'missing txAdminServerMode/+exec/server.cfg';
                 continue;
             }
 
-            ActionLogService::append("FiveMCommandBridge: FXServer local encontrado PID={$pid} para pasta {$folder} (porta {$this->port})");
-            return $pid;
+            $score = 0;
+            $reasons = [];
+            if ($hasTxAdmin) {
+                $score += 100;
+                $reasons[] = 'txAdminServerMode';
+            }
+            if ($hasExec) {
+                $score += 80;
+                $reasons[] = '+exec';
+            }
+            if ($hasConfig) {
+                $score += 60;
+                $reasons[] = 'server.cfg';
+            }
+            if (stripos($this->normalizePath($executablePath), $normalizedFolder) !== false) {
+                $score += 40;
+                $reasons[] = 'executable_in_folder';
+            }
+            if (!empty($this->port) && stripos($commandLine, (string) $this->port) !== false) {
+                $score += 20;
+                $reasons[] = 'port_match';
+            }
+            if (stripos($this->normalizePath($commandLine), $normalizedFolder) !== false) {
+                $score += 20;
+                $reasons[] = 'folder_in_commandline';
+            }
+
+            $candidates[] = [
+                'pid' => $pid,
+                'commandLine' => $commandLine,
+                'executablePath' => $executablePath,
+                'score' => $score,
+                'reason' => implode(', ', $reasons),
+            ];
         }
 
-        ActionLogService::append("FiveMCommandBridge: Nenhum FXServer local encontrado para pasta {$folder} (porta {$this->port})");
-        return null;
+        ActionLogService::append("FiveMCommandBridge: process scan complete. All processes: " . implode(' | ', $allProcesses));
+        if (empty($candidates)) {
+            if (!empty($ignored)) {
+                $ignoredLines = [];
+                foreach ($ignored as $pid => $reason) {
+                    $ignoredLines[] = "PID={$pid}: {$reason}";
+                }
+                ActionLogService::append("FiveMCommandBridge: ignored processes: " . implode(' | ', $ignoredLines));
+            }
+            ActionLogService::append("FiveMCommandBridge: Nenhum FXServer local encontrado para pasta {$folder} (porta {$this->port})");
+            return null;
+        }
+
+        usort($candidates, function ($a, $b) {
+            if ($a['score'] === $b['score']) {
+                return $b['pid'] <=> $a['pid'];
+            }
+            return $b['score'] <=> $a['score'];
+        });
+
+        $best = $candidates[0];
+        ActionLogService::append("FiveMCommandBridge: selected FXServer PID={$best['pid']} score={$best['score']} reason={$best['reason']}");
+        return $best['pid'];
     }
 
     private function getLocalPipePath(?int $pid): string
