@@ -47,9 +47,10 @@ interface EngineInterface
      * Obtém status do servidor
      * 
      * @param string $folder Caminho da pasta do servidor
+     * @param int|null $port Porta a ser usada para verificação (opcional)
      * @return array
      */
-    public function getStatus(string $folder): array;
+    public function getStatus(string $folder, ?int $port = null): array;
 
     /**
      * Detecta automaticamente se é este engine

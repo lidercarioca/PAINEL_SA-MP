@@ -86,6 +86,7 @@ export const deletePlan = (id) => api.delete(`/plans/${id}`);
 
 // FiveM Resources
 export const fetchFiveMResources = (serverId) => api.get(`/servers/${serverId}/fivem/resources`);
-export const executeFiveMResourceAction = (serverId, data) => api.post(`/servers/${serverId}/fivem/resources/action`, data);
+export const executeFiveMResourceAction = (serverId, resourceName, action) =>
+  api.post(`/servers/${serverId}/fivem/resources/${action}`, { resource: resourceName });
 
 export default api;

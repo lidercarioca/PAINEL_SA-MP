@@ -99,20 +99,35 @@ class FiveM Engine implements EngineInterface
     private function sendHttpCommand(string $command): bool|string
     {
         try {
-            $url = "http://{$this->ip}:{$this->port}/api/manage/server/log";
-            
-            $context = stream_context_create([
-                'http' => [
-                    'method' => 'POST',
-                    'header' => "Authorization: Bearer {$this->apiToken}\r\n" .
-                                "Content-Type: application/json\r\n",
-                    'content' => json_encode(['command' => $command]),
-                    'timeout' => 5
-                ]
-            ]);
+            $payload = json_encode(['command' => $command]);
+            $headers = "Authorization: Bearer {$this->apiToken}\r\n" .
+                       "X-TxAdmin-Token: {$this->apiToken}\r\n" .
+                       "Content-Type: application/json\r\n";
 
-            $response = @file_get_contents($url, false, $context);
-            return $response ?: false;
+            $paths = [
+                '/api/manage/server/command',
+                '/api/manage/server/console',
+            ];
+
+            foreach ($paths as $path) {
+                $url = "http://{$this->ip}:{$this->port}{$path}";
+                $context = stream_context_create([
+                    'http' => [
+                        'method' => 'POST',
+                        'header' => $headers,
+                        'content' => $payload,
+                        'timeout' => 5,
+                        'ignore_errors' => true,
+                    ]
+                ]);
+
+                $response = @file_get_contents($url, false, $context);
+                if ($response !== false) {
+                    return $response;
+                }
+            }
+
+            return false;
         } catch (\Exception $e) {
             return false;
         }

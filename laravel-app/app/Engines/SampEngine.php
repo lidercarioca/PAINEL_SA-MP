@@ -65,7 +65,7 @@ class SampEngine implements EngineInterface
         );
     }
 
-    public function getStatus(string $folder): array
+    public function getStatus(string $folder, ?int $port = null): array
     {
         $isRunning = $this->localServerService->isRunning(['folder' => $folder, 'type' => 'local']);
         

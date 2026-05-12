@@ -14,6 +14,7 @@ const CreateServer = () => {
     name: '',
     ip: '',
     port: 7777,
+    txadmin_port: '',
     password: '',
     type: 'local',
     engine: 'samp',
@@ -34,6 +35,7 @@ const CreateServer = () => {
   const [message, setMessage] = useState('');
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [hasExistingPassword, setHasExistingPassword] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem('auth_token');
@@ -91,7 +93,8 @@ const CreateServer = () => {
           name: server.name || '',
           ip: server.ip || '',
           port: server.port || 7777,
-          password: server.password || '',
+          txadmin_port: server.txadmin_port || '',
+          password: '', // Sempre deixar vazio por segurança
           type: server.type || 'local',
           engine: server.engine || 'samp',
           folder: server.folder || '',
@@ -105,6 +108,8 @@ const CreateServer = () => {
           auto_restart_on_crash: Boolean(server.auto_restart_on_crash),
           auto_restart_on_offline: Boolean(server.auto_restart_on_offline),
         });
+        // Guardar se tem senha para mostrar placeholder
+        setHasExistingPassword(server.has_rcon_password || false);
       } else {
         setMessage('Servidor não encontrado.');
         navigate('/servers');
@@ -124,6 +129,7 @@ const CreateServer = () => {
     try {
       const serverData = {
         ...newServer,
+        txadmin_port: newServer.txadmin_port ? Number(newServer.txadmin_port) : null,
         game_mode: newServer.game_mode ? String(newServer.game_mode) : null,
         auto_restart_interval_hours: newServer.auto_restart_interval_hours ? Number(newServer.auto_restart_interval_hours) : null,
         disk_limit_gb: newServer.disk_limit_gb ? Number(newServer.disk_limit_gb) : null,
@@ -262,6 +268,18 @@ const CreateServer = () => {
                   required
                 />
               </div>
+              {newServer.engine === 'fivem' && (
+                <div className="form-field">
+                  <label>Porta txAdmin (opcional)</label>
+                  <input
+                    type="number"
+                    placeholder="40120"
+                    value={newServer.txadmin_port}
+                    onChange={(e) => setNewServer({ ...newServer, txadmin_port: e.target.value ? Number(e.target.value) : '' })}
+                  />
+                  <small className="form-hint">Porta do txAdmin (padrão: 40120). Deixe vazio para tentar portas comuns.</small>
+                </div>
+              )}
               <div className="form-field">
                 <label>Gamemode</label>
                 <input
@@ -376,9 +394,15 @@ const CreateServer = () => {
                 <label>Senha RCON</label>
                 <input
                   type="text"
+                  placeholder={hasExistingPassword ? "Senha RCON cadastrada — deixe em branco para manter" : "Digite a senha RCON"}
                   value={newServer.password}
                   onChange={(e) => setNewServer({ ...newServer, password: e.target.value })}
                 />
+                {hasExistingPassword && (
+                  <small style={{ color: '#4CAF50', marginTop: '4px', display: 'block' }}>
+                    ✓ Senha RCON já cadastrada
+                  </small>
+                )}
               </div>
               <div className="form-field">
                 <label>Engine / Motor do Jogo</label>

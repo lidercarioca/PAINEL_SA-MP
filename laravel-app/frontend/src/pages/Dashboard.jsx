@@ -82,6 +82,7 @@ const Dashboard = () => {
     name: '',
     ip: '',
     port: 7777,
+    txadmin_port: '',
     password: '',
     type: 'local',
     engine: 'samp',
@@ -602,6 +603,7 @@ const Dashboard = () => {
       name: server.name || '',
       ip: server.ip || '',
       port: server.port || 7777,
+      txadmin_port: server.txadmin_port || '',
       password: server.password || '',
       type: server.type || 'local',
       engine: resolveEngine(server),
@@ -626,6 +628,7 @@ const Dashboard = () => {
       name: '',
       ip: '',
       port: 7777,
+      txadmin_port: '',
       password: '',
       type: 'local',
       engine: 'samp',
@@ -650,6 +653,7 @@ const Dashboard = () => {
           server_id: editingServerId,
           ...newServer,
           port: Number(newServer.port),
+          txadmin_port: newServer.txadmin_port ? Number(newServer.txadmin_port) : null,
           game_mode: newServer.game_mode ? String(newServer.game_mode) : null,
           plan_id: newServer.plan_id ? Number(newServer.plan_id) : null,
           limit_ram: newServer.limit_ram ? Number(newServer.limit_ram) : null,
@@ -664,6 +668,7 @@ const Dashboard = () => {
       } else {
         await createServer({
           ...newServer,
+          txadmin_port: newServer.txadmin_port ? Number(newServer.txadmin_port) : null,
           game_mode: newServer.game_mode ? String(newServer.game_mode) : null,
           auto_restart_interval_hours: newServer.auto_restart_interval_hours ? Number(newServer.auto_restart_interval_hours) : null,
           auto_restart_on_crash: Boolean(newServer.auto_restart_on_crash),
@@ -886,6 +891,16 @@ const Dashboard = () => {
     if (activeServer) {
       navigate(`/console/${activeServer.id}`);
     }
+  };
+
+  const openTxAdminConsole = () => {
+    if (!activeServer) {
+      return;
+    }
+
+    const txPort = activeServer.txadmin_port || 40120;
+    const txAdminUrl = `http://127.0.0.1:${txPort}`;
+    window.open(txAdminUrl, '_blank', 'noopener,noreferrer');
   };
 
   return (
@@ -1289,7 +1304,7 @@ const Dashboard = () => {
                   <>
                     <button
                       type="button"
-                      onClick={scrollToConsole}
+                      onClick={openTxAdminConsole}
                       className="action-button quick-action-btn btn-console"
                       style={{
                         background: '#8b5cf6',

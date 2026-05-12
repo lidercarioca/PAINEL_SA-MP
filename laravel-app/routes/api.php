@@ -52,6 +52,12 @@ Route::middleware('api.token')->group(function () {
     Route::get('/servers/{serverId}/status', [ServerController::class, 'status']);
     Route::get('/servers/{serverId}/fivem/resources', [FiveMResourceController::class, 'index']);
     Route::post('/servers/{serverId}/fivem/resources/action', [FiveMResourceController::class, 'action']);
+    Route::post('/servers/{serverId}/fivem/resources/{action}', [FiveMResourceController::class, 'action'])
+        ->where('action', 'ensure|start|stop|restart');
+    Route::get('/fivem/resources/{serverId}', [FiveMResourceController::class, 'index']);
+    Route::post('/fivem/resources/{serverId}/action', [FiveMResourceController::class, 'action']);
+    Route::post('/fivem/resources/{serverId}/{action}', [FiveMResourceController::class, 'action'])
+        ->where('action', 'ensure|start|stop|restart');
     Route::get('/servers/{serverId}/console-stream', [LogController::class, 'stream']);
     Route::get('/logs', [LogController::class, 'index']);
     Route::get('/files', [FileController::class, 'index']);

@@ -22,9 +22,9 @@ const Resources = () => {
   const [activeServerId, setActiveServerId] = useState(initialServerId);
   const [activeServer, setActiveServer] = useState(null);
   const [resources, setResources] = useState([]);
-  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [actionLoading, setActionLoading] = useState({});
@@ -95,18 +95,17 @@ const Resources = () => {
 
     setLoading(true);
     setError('');
+    setMessage(null);
 
     try {
       const response = await fetchFiveMResources(activeServerId);
       if (response.data.success) {
         setResources(response.data.resources || []);
-        setStats(response.data.stats);
       }
     } catch (err) {
       const errorMsg = getApiErrorMessage(err);
       setError(errorMsg);
       setResources([]);
-      setStats(null);
     } finally {
       setLoading(false);
     }
@@ -125,23 +124,36 @@ const Resources = () => {
   const handleResourceAction = async (resourceName, action) => {
     if (!activeServerId) return;
 
+    setMessage({ type: 'info', text: 'Executando ação...' });
     setActionLoading(prev => ({ ...prev, [`${resourceName}-${action}`]: true }));
 
     try {
-      const response = await executeFiveMResourceAction(activeServerId, {
-        resource: resourceName,
-        action: action,
-      });
+      const response = await executeFiveMResourceAction(activeServerId, resourceName, action);
+      const responseData = response.data || {};
 
-      if (response.data.success) {
-        setMessage({ type: 'success', text: response.data.message });
-        setTimeout(() => setMessage(null), 3000);
+      if (responseData.success) {
+        setMessage({
+          type: 'success',
+          text: responseData.message || `Resource iniciado com sucesso via ${responseData.bridge || 'desconhecido'}`,
+          bridge: responseData.bridge,
+          errorCode: responseData.error_code,
+          attemptedBridges: responseData.attempted_bridges,
+        });
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await loadResources();
+        setTimeout(() => setMessage(null), 5000);
       } else {
-        setMessage({ type: 'info', text: response.data.message });
+        setMessage({
+          type: 'error',
+          text: responseData.message || 'Falha ao executar ação',
+          bridge: responseData.bridge,
+          errorCode: responseData.error_code,
+          attemptedBridges: responseData.attempted_bridges,
+        });
       }
     } catch (err) {
       const errorMsg = getApiErrorMessage(err);
-      setMessage({ type: 'error', text: errorMsg });
+      setMessage({ type: 'error', text: errorMsg, bridge: null, errorCode: null });
     } finally {
       setActionLoading(prev => ({ ...prev, [`${resourceName}-${action}`]: false }));
     }
@@ -153,16 +165,16 @@ const Resources = () => {
 
     switch (filterType) {
       case 'enabled':
-        matchesFilter = resource.enabled;
+        matchesFilter = resource.started || resource.ensured;
         break;
       case 'disabled':
-        matchesFilter = !resource.enabled;
+        matchesFilter = !resource.started && !resource.ensured;
         break;
       case 'fxmanifest':
-        matchesFilter = resource.has_fxmanifest;
+        matchesFilter = resource.hasFxmanifest;
         break;
       case 'resource-lua':
-        matchesFilter = resource.has_resource_lua;
+        matchesFilter = resource.hasResourceLua;
         break;
       default:
         matchesFilter = true;
@@ -183,6 +195,26 @@ const Resources = () => {
       {error && !isFiveMServer && (
         <div className="dashboard-error-banner">
           <p>{error}</p>
+        </div>
+      )}
+
+      {message && (
+        <div className={`dashboard-message ${message.type || 'info'}`}>
+          <p>{message.text}</p>
+          {message.bridge && <p className="message-detail">Bridge: {message.bridge}</p>}
+          {message.errorCode && <p className="message-detail">Código: {message.errorCode}</p>}
+          {message.attemptedBridges && message.attemptedBridges.length > 0 && (
+            <div className="message-detail">
+              <p>Bridges tentadas:</p>
+              <ul>
+                {message.attemptedBridges.map((attempt, index) => (
+                  <li key={index}>
+                    {attempt.bridge}: {attempt.success ? 'sucesso' : `falhou - ${attempt.reason}`}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
@@ -207,28 +239,6 @@ const Resources = () => {
               Recarregar
             </LoadingButton>
           </div>
-
-          {/* Stats Cards */}
-          {stats && (
-            <div className="resources-stats-grid">
-              <div className="resource-stat-card">
-                <div className="stat-value">{stats.total}</div>
-                <div className="stat-label">Total de Resources</div>
-              </div>
-              <div className="resource-stat-card">
-                <div className="stat-value">{stats.enabled}</div>
-                <div className="stat-label">Ativos</div>
-              </div>
-              <div className="resource-stat-card">
-                <div className="stat-value">{stats.with_fxmanifest}</div>
-                <div className="stat-label">Com FxManifest</div>
-              </div>
-              <div className="resource-stat-card">
-                <div className="stat-value">{stats.with_lua}</div>
-                <div className="stat-label">Com Resource.lua</div>
-              </div>
-            </div>
-          )}
 
           {/* Search and Filters */}
           <div className="resources-controls">
@@ -263,10 +273,10 @@ const Resources = () => {
                 <thead>
                   <tr>
                     <th>Nome</th>
-                    <th>Status</th>
+                    <th>Estado</th>
                     <th>Tipo</th>
-                    <th>Tamanho</th>
-                    <th>Última Alteração</th>
+                    <th>Ensure</th>
+                    <th>Path</th>
                     <th>Ações</th>
                   </tr>
                 </thead>
@@ -274,18 +284,22 @@ const Resources = () => {
                   {filteredResources.map(resource => (
                     <tr key={resource.name}>
                       <td data-label="Nome">{resource.name}</td>
-                      <td data-label="Status">
-                        <span className={`resource-badge ${resource.enabled ? 'badge-active' : 'badge-inactive'}`}>
-                          {resource.enabled ? '✓ Ativo' : '✗ Inativo'}
+                      <td data-label="Estado">
+                        <span className={`resource-badge ${resource.started || resource.ensured ? 'badge-active' : 'badge-inactive'}`}>
+                          {resource.started || resource.ensured ? 'ONLINE' : 'STOPPED'}
                         </span>
                       </td>
                       <td data-label="Tipo">
                         <span className="resource-type-badge">
-                          {resource.has_fxmanifest ? 'FxManifest' : 'Resource.lua'}
+                          {resource.hasFxmanifest ? 'FxManifest' : 'Resource.lua'}
                         </span>
                       </td>
-                      <td data-label="Tamanho">{resource.size}</td>
-                      <td data-label="Última Alteração">{resource.last_modified}</td>
+                      <td data-label="Ensure">
+                        <span className={`resource-badge ${resource.ensured ? 'badge-active' : 'badge-inactive'}`}>
+                          {resource.ensured ? 'Sim' : 'Não'}
+                        </span>
+                      </td>
+                      <td data-label="Path">{resource.path}</td>
                       <td data-label="Ações" className="resource-actions">
                         <LoadingButton
                           loading={actionLoading[`${resource.name}-ensure`]}

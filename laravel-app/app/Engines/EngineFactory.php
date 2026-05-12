@@ -57,7 +57,7 @@ class EngineFactory
             'fivem' => new FiveMEngine(
                 $server->ip,
                 $server->port,
-                null // API token pode ser adicionado depois
+                $server->password ?? null
             ),
             default => new SampEngine(
                 $this->rconService,

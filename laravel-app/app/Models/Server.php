@@ -13,6 +13,7 @@ class Server extends Model
         'name',
         'ip',
         'port',
+        'txadmin_port',
         'password',
         'type',
         'engine',
@@ -42,6 +43,15 @@ class Server extends Model
         'auto_restart_on_offline' => 'boolean',
         'last_auto_restart_at' => 'datetime',
     ];
+
+    protected $appends = [
+        'has_rcon_password',
+    ];
+
+    public function getHasRconPasswordAttribute()
+    {
+        return !empty($this->password);
+    }
 
     public function owner()
     {

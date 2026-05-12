@@ -216,6 +216,10 @@ class ServerController extends Controller
 
     private function measureFivemPing(string $ip, int $port): ?int
     {
+        // ⚠️ DEPRECATED: Use measureFivemPingWithServer() instead to properly handle local servers
+        // This method doesn't have access to Server object to determine if it's local
+        // and should always use 127.0.0.1 for localhost FiveM queries
+        
         $urls = [
             "http://{$ip}:{$port}/info.json",
             "http://{$ip}:{$port}/players.json"
@@ -961,6 +965,7 @@ class ServerController extends Controller
             'name' => 'required|string',
             'ip' => 'required|ip',
             'port' => 'required|integer',
+            'txadmin_port' => 'nullable|integer',
             'password' => 'nullable|string',
             'type' => 'required|in:local,ssh',
             'engine' => 'nullable|in:samp,fivem',
@@ -985,6 +990,7 @@ class ServerController extends Controller
             'name' => $data['name'],
             'ip' => $data['ip'],
             'port' => $data['port'],
+            'txadmin_port' => $data['txadmin_port'] ?? null,
             'password' => $data['password'] ?? null,
             'type' => $data['type'],
             'engine' => $data['engine'] ?? 'samp',
@@ -1013,6 +1019,7 @@ class ServerController extends Controller
             'name' => 'sometimes|required|string',
             'ip' => 'sometimes|required|ip',
             'port' => 'sometimes|required|integer',
+            'txadmin_port' => 'nullable|integer',
             'password' => 'nullable|string',
             'type' => 'sometimes|required|in:local,ssh',
             'engine' => 'nullable|in:samp,fivem',
@@ -1043,7 +1050,12 @@ class ServerController extends Controller
             $server->port = $data['port'];
         }
         if ($request->has('password')) {
-            $server->password = $data['password'] ?? null;
+            $password = $data['password'];
+            // Só atualizar senha se ela for fornecida e não vazia
+            if (!empty($password)) {
+                $server->password = $password;
+            }
+            // Se password for string vazia, não alterar (manter senha existente)
         }
         if ($request->has('type')) {
             $server->type = $data['type'];
@@ -1063,6 +1075,9 @@ class ServerController extends Controller
         }
         if ($request->has('plan_id')) {
             $server->plan_id = $data['plan_id'] ?? null;
+        }
+        if ($request->has('txadmin_port')) {
+            $server->txadmin_port = $data['txadmin_port'] ?? null;
         }
         if ($request->has('game_mode')) {
             $server->game_mode = $data['game_mode'] ?? null;
